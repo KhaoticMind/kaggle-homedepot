@@ -9,6 +9,9 @@ from sklearn.cross_validation import cross_val_score
 from sklearn.ensemble import RandomForestRegressor, BaggingRegressor, GradientBoostingRegressor
 from sklearn.grid_search import GridSearchCV, RandomizedSearchCV
 
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+
 import numpy as np
 import time
 
@@ -40,8 +43,8 @@ def load_data():
     df_material['material'] = df_material['value']
     df_material.drop('value', axis=1, inplace=True)
 
-    # df_test = pd.read_csv('test.csv', encoding='ISO-8859-1')
-    df_test = None
+    df_test = pd.read_csv('test.csv', encoding='ISO-8859-1')
+
     timer.done("Carregando dados")
 
     return (df_train, df_brand, df_material, df_desc, df_test)
@@ -57,6 +60,10 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
     from nltk.stem.wordnet import WordNetLemmatizer
     wnl = WordNetLemmatizer()
     snow = SnowballStemmer('english')
+
+    num_train = df_train.shape[0]
+    id_test = df_test['id']
+    y = df_train['relevance'].values
 
     def stem(x):
         #return wnl.lemmatize(x)
@@ -137,12 +144,13 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
         grams2 = list(everygrams(str2, min_len, max_len))
         return sum(grams2.count(gram) for gram in grams1)
 
-    df_all = df_train
+    df_all = pd.concat((df_train, df_test), axis=0, ignore_index=True)
     df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
     df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
     df_all = pd.merge(df_all, df_desc, how='left', on='product_uid')
 
-    del df_brand, df_material, df_desc
+
+    del df_brand, df_material, df_desc, df_test
 
     df_all.fillna('', inplace=True)
 
@@ -150,10 +158,12 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
                'material', 'brand']
 
     timer.done("Finalizando primeiro processamento")
+
     for col in columns:
         df_all[col] = df_all[col].map(lambda x: str_stemmer(x))
         df_all['n_word_'+col] = df_all[col].str.count('\ +')
         df_all['n_char_'+col] = df_all[col].str.count('')
+
         if not col == 'search_term':
             df_all['n_search_word_in_' + col] = df_all.apply(lambda x: str_common_word(x['search_term'], x[col]), axis=1)
             df_all['word_ratio_' + col] = (df_all['n_search_word_in_' + col] / df_all['n_word_search_term'])
@@ -163,11 +173,19 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
             df_all['n_search_4grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 4, 4), axis=1)
         timer.done("Finalizado coluna " + col)
 
-    y = df_all['relevance'].values
     x = df_all.drop(['id', 'product_uid', 'relevance'] + columns, axis=1).values
     x = np.nan_to_num(x.astype('float32'))
 
-    return (x, y)
+    tsvd = TruncatedSVD()
+    tfidf = TfidfVectorizer()
+    for col in columns:
+        x = np.concatenate((x, tsvd.fit_transform(tfidf.fit_transform(df_all[col]))), axis=1)
+
+    timer.done("Fim do tfidf")
+
+    x_train = x[:num_train]
+    x_test = x[num_train:]
+    return (x_train, y, x_test, id_test)
 
 
 def rmse(y, y_pred):
@@ -182,26 +200,34 @@ if __name__ == '__main__':
     from sklearn.metrics import make_scorer
     from xgboost import XGBRegressor
     import sys
+    import pandas as pd
 
-    x, y = process_data(*load_data())
+    x, y, x_test, id_test = process_data(*load_data())
     joblib.dump(x, 'x.pkl')
     joblib.dump(y, 'y.pkl')
+    joblib.dump(x_test, 'x_test.pkl')
+    joblib.dump(id_test, 'id_test.pkl')
     # x = joblib.load('x.pkl')
     # y = joblib.load('y.pkl')
+    # x_test = joblib.load('x_test.pkl')
+    # id_test = joblib.load('id_test.pkl')
 
     rmse_scorer = make_scorer(rmse, greater_is_better=False)
 
-
     xgbr = XGBRegressor(nthread=15,
-                        n_estimators=2000,
-                        colsample_bytree=0.7,
-                        min_child_weight=4.0,
-                        subsample=0.55,
-                        learning_rate=0.05,
+                        n_estimators=5000,
+                        #colsample_bytree=0.7,
+                        #min_child_weight=4.0,
+                        #subsample=0.55,
+                        #learning_rate=0.05,
                         #gamma=0.75
                         )
-    #xgbr.fit(x, y, eval_metric='rmse')
-
+    xgbr.fit(x, y, eval_metric='rmse')
+    y_pred = xgbr.predict(x_test)
+    y_pred[y_pred > 3] = 3
+    y_pred[y_pred < 1] = 1
+    pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
+    '''
     rmse = cross_val_score(xgbr,
                            x,
                            y,
@@ -212,9 +238,11 @@ if __name__ == '__main__':
                            fit_params={'eval_metric':'rmse'}
                            )
     print(np.mean(rmse), np.std(rmse))
+    '''
+
     sys.exit(0)
 
-
+    rmse_scorer = make_scorer(rmse, greater_is_better=False)
     rf = RandomForestRegressor(n_estimators=100,
                                random_state=0)
 
@@ -229,14 +257,15 @@ if __name__ == '__main__':
                            max_samples=0.1,
                            random_state=25)
 
-#    rmse = cross_val_score(clf,
-#                           x,
-#                           y,
-#                           cv=5,
-#                           scoring=rmse_scorer,
-#                           verbose=255,
-#                           n_jobs=-1)
-#    print(np.mean(rmse), np.std(rmse))
+    rmse = cross_val_score(clf,
+                           x,
+                           y,
+                           cv=5,
+                           scoring=rmse_scorer,
+                           verbose=255,
+                           n_jobs=-1)
+    print(np.mean(rmse), np.std(rmse))
+
 
 
     rf = RandomForestRegressor(random_state=0)
