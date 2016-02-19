@@ -41,7 +41,7 @@ snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
 
-N_JOBS = 7
+N_JOBS = 22
 
 
 class TimeCount(object):
@@ -295,7 +295,7 @@ def gbr_grid_search(x, y, random=False):
     params_gbr = {'loss': ['ls'],   # , 'lad', 'huber', 'quantile'],
                   'learning_rate': np.linspace(0.01, 0.5, 5),
                   'max_depth': np.linspace(3, 10, 5, dtype='int'),
-                  'n_estimators': [300],
+                  'n_estimators': [500],
                   'subsample': np.linspace(0.1, 1.0, 4),
                   'max_features': ['sqrt']  # , 'log2', None]
                   }
@@ -313,7 +313,7 @@ def rfr_grid_search(x, y, random=False):
                  'bootstrap': [True, False],
                  'max_features': ['sqrt', 'log2', None],
                  'max_depth': [3, 6, 10, 15],
-                 'n_estimators': [100, 200]}
+                 'n_estimators': [500]}
 
     if not random:
         grid = base_grid_search(rf, x, y, params_rf)
@@ -342,7 +342,7 @@ def xgbr_grid_search(x, y, random=False):
     return grid
 
 
-def bagr_grid_search(x, y, base, random=False):
+def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
     bagr = BaggingRegressor(base)
     params_bagr = {'max_samples': np.linspace(0.1, 1, 5),
                    'n_estimators': [100],
@@ -413,8 +413,8 @@ if __name__ == '__main__':
     # joblib.dump(y, 'y.pkl')
     # joblib.dump(x_test, 'x_test.pkl')
     # joblib.dump(id_test, 'id_test.pkl')
-    x = joblib.load('x.pkl')[:3000]
-    y = joblib.load('y.pkl')[:3000]
+    x = joblib.load('x.pkl')[:5000]
+    y = joblib.load('y.pkl')[:5000]
     x_test = joblib.load('x_test.pkl')
     id_test = joblib.load('id_test.pkl')
 
