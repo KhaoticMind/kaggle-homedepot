@@ -267,7 +267,7 @@ def base_randomized_grid_search(est, x, y, params, fit_params=None):
                               n_jobs=N_JOBS,
                               fit_params=fit_params,
                               cv=3,
-                              n_iter=10,
+                              n_iter=30,
                               )
 
     grid.fit(x, y)
@@ -295,8 +295,8 @@ def gbr_grid_search(x, y, random=False):
     params_gbr = {'loss': ['ls'],   # , 'lad', 'huber', 'quantile'],
                   'learning_rate': np.linspace(0.01, 0.5, 5),
                   'max_depth': np.linspace(3, 10, 5, dtype='int'),
-                  'n_estimators': [500],
-                  'subsample': np.linspace(0.1, 1.0, 4),
+                  'n_estimators': np.linspace(100, 500, 5, dtype='int'),
+                  'subsample': np.linspace(0.1, 1.0, 5),
                   'max_features': ['sqrt']  # , 'log2', None]
                   }
 
@@ -313,7 +313,8 @@ def rfr_grid_search(x, y, random=False):
                  'bootstrap': [True, False],
                  'max_features': ['sqrt', 'log2', None],
                  'max_depth': [3, 6, 10, 15],
-                 'n_estimators': [500]}
+                 'n_estimators': np.linspace(10, 500, 5, dtype='int'),
+                 }
 
     if not random:
         grid = base_grid_search(rf, x, y, params_rf)
@@ -329,7 +330,7 @@ def xgbr_grid_search(x, y, random=False):
                   'learning_rate': np.linspace(0.01, 0.5, 5),
                   'subsample': np.linspace(0.5, 1, 5),
                   'colsample_bytree': np.linspace(0.5, 1, 5),
-                  'n_estimators': [1000],
+                  'n_estimators': np.linspace(100, 1500, 5, dtype='int'),
                   }
 
     fit_params_xgb = {'eval_metric': 'rmse'}
@@ -345,7 +346,7 @@ def xgbr_grid_search(x, y, random=False):
 def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
     bagr = BaggingRegressor(base)
     params_bagr = {'max_samples': np.linspace(0.1, 1, 5),
-                   'n_estimators': [100],
+                   'n_estimators': np.linspace(10, 500, 5, dtype='int'),
                    'max_features': np.linspace(0.1, 1, 5),
                    }
     if not random:
@@ -362,22 +363,22 @@ class MetaRegressor(BaseEstimator):
         timer= TimeCount()
 
         self.xbr = xgbr_grid_search(x, y, True)
-        self.scores.append(self.xbr.best_score_)
+        self.scores.append(self.xbr.best_score_ * -1)
         self.xbr = self.xbr.best_estimator_
         timer.done("XGBR")
 
         self.gbr = gbr_grid_search(x, y, True)
-        self.scores.append(self.gbr.best_score_)
+        self.scores.append(self.gbr.best_score_ * -1)
         self.gbr = self.gbr.best_estimator_
         timer.done("GBR")
 
         self.rfr = rfr_grid_search(x, y, True)
-        self.scores.append(self.rfr.best_score_)
+        self.scores.append(self.rfr.best_score_ * -1)
         self.rfr = self.rfr.best_estimator_
         timer.done("RFR")
 
-        self.bagr = bagr_grid_search(x, y, self.rfr, True)
-        self.scores.append(self.bagr.best_score_)
+        self.bagr = bagr_grid_search(x, y, random=True)
+        self.scores.append(self.bagr.best_score_ * -1)
         self.bagr = self.bagr.best_estimator_
         timer.done("BAG")
 
@@ -413,13 +414,13 @@ if __name__ == '__main__':
     # joblib.dump(y, 'y.pkl')
     # joblib.dump(x_test, 'x_test.pkl')
     # joblib.dump(id_test, 'id_test.pkl')
-    x = joblib.load('x.pkl')[:5000]
-    y = joblib.load('y.pkl')[:5000]
+    x = joblib.load('x.pkl')[:1000]
+    y = joblib.load('y.pkl')[:1000]
     x_test = joblib.load('x_test.pkl')
     id_test = joblib.load('id_test.pkl')
 
     est = MetaRegressor()
     base_cross_val(est, x, y)
-    base_cross_val(XGBRegressor(), x, y)
+    base_cross_val(XGBRegressor(n_estimators=500), x, y)
 
     #pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
