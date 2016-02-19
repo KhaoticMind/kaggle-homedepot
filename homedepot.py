@@ -258,7 +258,7 @@ def base_randomized_grid_search(est, x, y, params, fit_params=None):
                               n_jobs=15,
                               fit_params=fit_params,
                               cv=5,
-                              n_iter=40,
+                              n_iter=10,
                               )
 
     grid.fit(x, y)
@@ -282,7 +282,7 @@ def base_grid_search(est, x, y, params, fit_params=None):
 
 
 def gbr_grid_search(x, y, random=False):
-    gbr = GradientBoostingRegressor(random_state=0, init=rf)
+    gbr = GradientBoostingRegressor(random_state=0)
     params_gbr = {'loss': ['ls'],   # , 'lad', 'huber', 'quantile'],
                   'learning_rate': np.linspace(0.0001, 0.5, 10),
                   'max_depth': [10, 15, 20],
