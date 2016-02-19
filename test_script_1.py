@@ -242,8 +242,9 @@ clf = pipeline.Pipeline([
 param_grid = {'xgbr__n_estimators': [3000],
               'xgbr__max_depth': [3]
               }
-model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = -1, cv = 2, verbose = 20, scoring=RMSE, fit_params=fit_params)
 fit_params = {'xgbr__eval_metric':'rmse'}
+model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = -1, cv = 2, verbose = 20, scoring=RMSE, fit_params=fit_params)
+
 model.fit(X_train, y_train)
 
 print("Best parameters found by grid search:")

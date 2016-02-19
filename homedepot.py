@@ -41,6 +41,8 @@ snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
 
+N_JOBS = 7
+
 
 class TimeCount(object):
     def __init__(self):
@@ -60,7 +62,7 @@ class xgbDepot(XGBRegressor):
 
         '''
         # Normalizar os resutlados dentro da faixa esperada
-        # Durante o cross validation so piora os dados
+        # Durante o cross validation isso acabou piorando os resultados
         res = []
         foo = [1.00, 1.25, 1.33, 1.50, 1.67, 1.75, 2.00, 2.25, 2.33, 2.50, 2.67, 2.75, 3.00]
         for i in range(len(foo) - 1):
@@ -108,58 +110,65 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
     y = df_train['relevance'].values
 
     def str_stemmer(s):
-        s = s.replace("  ", " ")
-        s = s.replace(",", "") #could be number / segment later
-        s = s.replace("$", " ")
-        s = s.replace("?", " ")
-        s = s.replace("-", " ")
-        s = s.replace("//", "/")
-        s = s.replace("..", ".")
-        s = s.replace(" / ", " ")
-        s = s.replace(" \\ ", " ")
-        s = s.replace(".", " . ")
-        s = re.sub(r"(^\.|/)", r"", s)
-        s = re.sub(r"(\.|/)$", r"", s)
-        s = re.sub(r"([0-9])([a-z])", r"\1 \2", s)
-        s = re.sub(r"([a-z])([0-9])", r"\1 \2", s)
-        s = s.replace(" x ", " xbi ")
-        s = re.sub(r"([a-z])( *)\.( *)([a-z])", r"\1 \4", s)
-        s = re.sub(r"([a-z])( *)/( *)([a-z])", r"\1 \4", s)
-        s = s.replace("*", " xbi ")
-        s = s.replace(" by ", " xbi ")
-        s = re.sub(r"([0-9])( *)\.( *)([0-9])", r"\1.\4", s)
+        s = s.lower()
+        s = re.sub(r"(\w)\.([A-Z])", r"\1 \2", s) ##'desgruda' palavras que estão juntas
+
         s = re.sub(r"([0-9]+)( *)(inches|inch|in|')\.?", r"\1in. ", s)
+
         s = re.sub(r"([0-9]+)( *)(foot|feet|ft|'')\.?", r"\1ft. ", s)
+
         s = re.sub(r"([0-9]+)( *)(pounds|pound|lbs|lb)\.?", r"\1lb. ", s)
+
+        s = s.replace(" x ", " xby ")
+        s = s.replace("*", " xby ")
+        s = s.replace(" by ", " xby")
+        s = s.replace("x0", " xby 0")
+        s = s.replace("x1", " xby 1")
+        s = s.replace("x2", " xby 2")
+        s = s.replace("x3", " xby 3")
+        s = s.replace("x4", " xby 4")
+        s = s.replace("x5", " xby 5")
+        s = s.replace("x6", " xby 6")
+        s = s.replace("x7", " xby 7")
+        s = s.replace("x8", " xby 8")
+        s = s.replace("x9", " xby 9")
+        s = s.replace("0x", "0 xby ")
+        s = s.replace("1x", "1 xby ")
+        s = s.replace("2x", "2 xby ")
+        s = s.replace("3x", "3 xby ")
+        s = s.replace("4x", "4 xby ")
+        s = s.replace("5x", "5 xby ")
+        s = s.replace("6x", "6 xby ")
+        s = s.replace("7x", "7 xby ")
+        s = s.replace("8x", "8 xby ")
+        s = s.replace("9x", "9 xby ")
+
         s = re.sub(r"([0-9]+)( *)(square|sq) ?\.?(feet|foot|ft)\.?", r"\1sq.ft. ", s)
-        s = re.sub(r"([0-9]+)( *)(cubic|cu) ?\.?(feet|foot|ft)\.?", r"\1cu.ft. ", s)
+
         s = re.sub(r"([0-9]+)( *)(gallons|gallon|gal)\.?", r"\1gal. ", s)
+
         s = re.sub(r"([0-9]+)( *)(ounces|ounce|oz)\.?", r"\1oz. ", s)
+
         s = re.sub(r"([0-9]+)( *)(centimeters|cm)\.?", r"\1cm. ", s)
+
         s = re.sub(r"([0-9]+)( *)(milimeters|mm)\.?", r"\1mm. ", s)
-        s = s.replace("°"," degrees ")
+
         s = re.sub(r"([0-9]+)( *)(degrees|degree)\.?", r"\1deg. ", s)
-        s = s.replace(" v "," volts ")
+
         s = re.sub(r"([0-9]+)( *)(volts|volt)\.?", r"\1volt. ", s)
+
         s = re.sub(r"([0-9]+)( *)(watts|watt)\.?", r"\1watt. ", s)
+
         s = re.sub(r"([0-9]+)( *)(amperes|ampere|amps|amp)\.?", r"\1amp. ", s)
-        s = s.replace("  ", " ")
-        s = s.replace(" . ", " ")
+
+        s = s.replace("whirpool", "whirlpool")
+        s = s.replace("whirlpoolga", "whirlpool")
+        s = s.replace("whirlpoolstainless", "whirlpool stainless")
+
+        s = s.replace("  "," ")
 
         s = " ".join([wnl.lemmatize(word) for word in word_tokenize(s.lower())
                         if word not in stop])
-
-        s = s.replace("toliet", "toilet")
-        s = s.replace("airconditioner", "air conditioner")
-        s = s.replace("vinal", "vinyl")
-        s = s.replace("vynal", "vinyl")
-        s = s.replace("skill", "skil")
-        s = s.replace("snowbl", "snow bl")
-        s = s.replace("plexigla", "plexi gla")
-        s = s.replace("rustoleum", "rust-oleum")
-        s = s.replace("whirpool", "whirlpool")
-        s = s.replace("whirlpoolga", "whirlpool ga")
-        s = s.replace("whirlpoolstainless", "whirlpool stainless")
 
         return s
 
@@ -239,9 +248,9 @@ def base_cross_val(est, x, y, fit_params=None):
     res = cross_val_score(est,
                           x,
                           y,
-                          cv=10,
+                          cv=3,
                           scoring=rmse_scorer,
-                          verbose=0,
+                          verbose=3,
                           n_jobs=1,
                           fit_params=fit_params,
                           )
@@ -252,12 +261,12 @@ def base_randomized_grid_search(est, x, y, params, fit_params=None):
     rmse_scorer = make_scorer(rmse, greater_is_better=False)
     grid = RandomizedSearchCV(est,
                               params,
-                              verbose=3,
+                              verbose=0,
                               scoring=rmse_scorer,
                               error_score=100,
-                              n_jobs=15,
+                              n_jobs=N_JOBS,
                               fit_params=fit_params,
-                              cv=5,
+                              cv=3,
                               n_iter=10,
                               )
 
@@ -272,9 +281,9 @@ def base_grid_search(est, x, y, params, fit_params=None):
                         verbose=3,
                         scoring=rmse_scorer,
                         error_score=100,
-                        n_jobs=15,
+                        n_jobs=N_JOBS,
                         fit_params=fit_params,
-                        cv=5
+                        cv=3
                         )
 
     grid.fit(x, y)
@@ -282,12 +291,12 @@ def base_grid_search(est, x, y, params, fit_params=None):
 
 
 def gbr_grid_search(x, y, random=False):
-    gbr = GradientBoostingRegressor(random_state=0)
+    gbr = GradientBoostingRegressor()
     params_gbr = {'loss': ['ls'],   # , 'lad', 'huber', 'quantile'],
-                  'learning_rate': np.linspace(0.0001, 0.5, 10),
-                  'max_depth': [10, 15, 20],
+                  'learning_rate': np.linspace(0.01, 0.5, 5),
+                  'max_depth': np.linspace(3, 10, 5, dtype='int'),
                   'n_estimators': [300],
-                  'subsample': np.linspace(0.1, 1.0, 10),
+                  'subsample': np.linspace(0.1, 1.0, 4),
                   'max_features': ['sqrt']  # , 'log2', None]
                   }
 
@@ -299,12 +308,12 @@ def gbr_grid_search(x, y, random=False):
 
 
 def rfr_grid_search(x, y, random=False):
-    rf = RandomForestRegressor(random_state=0)
-    params_rf = {'oob_score': [True, False],
+    rf = RandomForestRegressor()
+    params_rf = {  # 'oob_score': [True, False],
                  'bootstrap': [True, False],
                  'max_features': ['sqrt', 'log2', None],
                  'max_depth': [3, 6, 10, 15],
-                 'n_estimators': [20, 50, 100, 200]}
+                 'n_estimators': [100, 200]}
 
     if not random:
         grid = base_grid_search(rf, x, y, params_rf)
@@ -320,6 +329,7 @@ def xgbr_grid_search(x, y, random=False):
                   'learning_rate': np.linspace(0.01, 0.5, 5),
                   'subsample': np.linspace(0.5, 1, 5),
                   'colsample_bytree': np.linspace(0.5, 1, 5),
+                  'n_estimators': [1000],
                   }
 
     fit_params_xgb = {'eval_metric': 'rmse'}
@@ -332,26 +342,64 @@ def xgbr_grid_search(x, y, random=False):
     return grid
 
 
+def bagr_grid_search(x, y, base, random=False):
+    bagr = BaggingRegressor(base)
+    params_bagr = {'max_samples': np.linspace(0.1, 1, 5),
+                   'n_estimators': [100],
+                   'max_features': np.linspace(0.1, 1, 5),
+                   }
+    if not random:
+        grid = base_grid_search(bagr, x, y, params_bagr)
+    else:
+        grid = base_randomized_grid_search(bagr, x, y, params_bagr)
+
+    return grid
+
 class MetaRegressor(BaseEstimator):
     def fit(self, x, y=None, **fit_params):
+        self.scores = []
+
+        timer= TimeCount()
+
         self.xbr = xgbr_grid_search(x, y, True)
+        self.scores.append(self.xbr.best_score_)
+        self.xbr = self.xbr.best_estimator_
+        timer.done("XGBR")
+
         self.gbr = gbr_grid_search(x, y, True)
+        self.scores.append(self.gbr.best_score_)
+        self.gbr = self.gbr.best_estimator_
+        timer.done("GBR")
+
         self.rfr = rfr_grid_search(x, y, True)
+        self.scores.append(self.rfr.best_score_)
+        self.rfr = self.rfr.best_estimator_
+        timer.done("RFR")
 
-        self.bagr = BaggingRegressor(self.rfr,
-                                     n_estimators=100,
-                                     max_samples=0.1,
-                                     random_state=25)
+        self.bagr = bagr_grid_search(x, y, self.rfr, True)
+        self.scores.append(self.bagr.best_score_)
+        self.bagr = self.bagr.best_estimator_
+        timer.done("BAG")
 
-        self.bagr.fit(x, y)
+        return self
 
-    def predict(self, hd_searches):
-        y_pred_xbr = self.xbr.predict(x_test)
-        y_pred_gbr = self.gbr.predict(x_test)
-        y_pred_rfr = self.rfr.predict(x_test)
-        y_pred_bag = self.bagr.predict(x_test)
+    def predict(self, x):
 
-        y_pred = (y_pred_xbr + y_pred_gbr + y_pred_rfr + y_pred_bag) / 5
+        y_pred_xbr = self.xbr.predict(x)
+        y_pred_gbr = self.gbr.predict(x)
+        y_pred_rfr = self.rfr.predict(x)
+        y_pred_bag = self.bagr.predict(x)
+
+        y_pred = np.vstack((y_pred_xbr, y_pred_gbr, y_pred_rfr, y_pred_bag))
+
+        factor = np.min(self.scores) / self.scores
+        print(self.scores)
+        print(factor)
+        print(np.sum(factor))
+
+        y_pred = np.expand_dims(factor, 1) * y_pred
+
+        y_pred = np.sum(y_pred, axis=0)/np.sum(factor)
 
         y_pred[y_pred > 3] = 3
         y_pred[y_pred < 1] = 1
@@ -365,17 +413,13 @@ if __name__ == '__main__':
     # joblib.dump(y, 'y.pkl')
     # joblib.dump(x_test, 'x_test.pkl')
     # joblib.dump(id_test, 'id_test.pkl')
-    x = joblib.load('x.pkl')
-    y = joblib.load('y.pkl')
+    x = joblib.load('x.pkl')[:3000]
+    y = joblib.load('y.pkl')[:3000]
     x_test = joblib.load('x_test.pkl')
     id_test = joblib.load('id_test.pkl')
 
     est = MetaRegressor()
     base_cross_val(est, x, y)
+    base_cross_val(XGBRegressor(), x, y)
 
     #pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
-
-# rfr
-# mean: 0.48109, std: 0.01171, params: {'oob_score': False, 'n_estimators': 200, 'max_depth': 15, 'max_features': 'sqrt', 'bootstrap': False}
-# gbr
-# mean: 0.48098, std: 0.01196, params: {'loss': 'ls', 'max_depth': 10, 'n_estimators': 200, 'learning_rate': 0.025750000000000002, 'subsample': 0.90000000000000002, 'max_features': 'sqrt'}
