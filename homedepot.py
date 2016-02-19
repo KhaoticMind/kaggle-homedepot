@@ -12,8 +12,30 @@ from sklearn.grid_search import GridSearchCV, RandomizedSearchCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 
+import pandas as pd
+from nltk.tokenize import word_tokenize
+from nltk.util import everygrams
+
+from nltk.stem.snowball import SnowballStemmer
+from nltk.stem.wordnet import WordNetLemmatizer
+from nltk.stem.porter import PorterStemmer
+
+from nltk.corpus import stopwords
+import re
+
 import numpy as np
 import time
+
+from sklearn.externals import joblib
+from sklearn.metrics import make_scorer
+from xgboost import XGBRegressor
+import sys
+
+stop = stopwords.words('english')
+
+wnl = WordNetLemmatizer()
+snow = SnowballStemmer('english')
+porter = PorterStemmer()
 
 class TimeCount(object):
     def __init__(self):
@@ -23,8 +45,8 @@ class TimeCount(object):
         print("%s: %s minutes ---" % (msg, round(((time.time() - self.start_time)/60), 2)))
         self.start_time = time.time()
 
+
 def load_data():
-    import pandas as pd
     timer = TimeCount()
 
     df_train = pd.read_csv('train.csv', encoding='ISO-8859-1')
@@ -52,28 +74,12 @@ def load_data():
 
 def process_data(df_train, df_brand, df_material, df_desc, df_test):
     timer = TimeCount()
-    import pandas as pd
-    from nltk.tokenize import word_tokenize
-    from nltk.util import everygrams
-
-    from nltk.stem.snowball import SnowballStemmer
-    from nltk.stem.wordnet import WordNetLemmatizer
-    wnl = WordNetLemmatizer()
-    snow = SnowballStemmer('english')
 
     num_train = df_train.shape[0]
     id_test = df_test['id']
     y = df_train['relevance'].values
 
-    def stem(x):
-        #return wnl.lemmatize(x)
-        return snow.stem(x)
-
     def str_stemmer(s):
-        from nltk.corpus import stopwords
-        import re
-        stop = stopwords.words('english')
-
         s = s.replace("  ", " ")
         s = s.replace(",", "") #could be number / segment later
         s = s.replace("$", " ")
@@ -109,23 +115,23 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
         s = re.sub(r"([0-9]+)( *)(volts|volt)\.?", r"\1volt. ", s)
         s = re.sub(r"([0-9]+)( *)(watts|watt)\.?", r"\1watt. ", s)
         s = re.sub(r"([0-9]+)( *)(amperes|ampere|amps|amp)\.?", r"\1amp. ", s)
-        s = s.replace("  "," ")
-        s = s.replace(" . "," ")
+        s = s.replace("  ", " ")
+        s = s.replace(" . ", " ")
 
-        s = " ".join([stem(word) for word in word_tokenize(s.lower())
+        s = " ".join([wnl.lemmatize(word) for word in word_tokenize(s.lower())
                         if word not in stop])
 
-        s = s.replace("toliet","toilet")
-        s = s.replace("airconditioner","air conditioner")
-        s = s.replace("vinal","vinyl")
-        s = s.replace("vynal","vinyl")
-        s = s.replace("skill","skil")
-        s = s.replace("snowbl","snow bl")
-        s = s.replace("plexigla","plexi gla")
-        s = s.replace("rustoleum","rust-oleum")
-        s = s.replace("whirpool","whirlpool")
+        s = s.replace("toliet", "toilet")
+        s = s.replace("airconditioner", "air conditioner")
+        s = s.replace("vinal", "vinyl")
+        s = s.replace("vynal", "vinyl")
+        s = s.replace("skill", "skil")
+        s = s.replace("snowbl", "snow bl")
+        s = s.replace("plexigla", "plexi gla")
+        s = s.replace("rustoleum", "rust-oleum")
+        s = s.replace("whirpool", "whirlpool")
         s = s.replace("whirlpoolga", "whirlpool ga")
-        s = s.replace("whirlpoolstainless","whirlpool stainless")
+        s = s.replace("whirlpoolstainless", "whirlpool stainless")
 
         return s
 
@@ -144,18 +150,23 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
         grams2 = list(everygrams(str2, min_len, max_len))
         return sum(grams2.count(gram) for gram in grams1)
 
-    df_all = pd.concat((df_train, df_test), axis=0, ignore_index=True)
+    if df_test is not None:
+        df_all = pd.concat((df_train, df_test), axis=0, ignore_index=True)
+        del df_test
+    else:
+        df_all = df_train
+
     df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
-    df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
     df_all = pd.merge(df_all, df_desc, how='left', on='product_uid')
+    #df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
+    #print(df_all.shape)
 
-
-    del df_brand, df_material, df_desc, df_test
+    del df_brand, df_material, df_desc
 
     df_all.fillna('', inplace=True)
 
     columns = ['search_term', 'product_title', 'product_description',
-               'material', 'brand']
+                'brand'] #'material',
 
     timer.done("Finalizando primeiro processamento")
 
@@ -171,15 +182,18 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
             df_all['n_search_2grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 2, 2), axis=1)
             df_all['n_search_3grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 3, 3), axis=1)
             df_all['n_search_4grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 4, 4), axis=1)
-        timer.done("Finalizado coluna " + col)
+        timer.done("Finalizado coluna "  + col + str(df_all.shape))
 
     x = df_all.drop(['id', 'product_uid', 'relevance'] + columns, axis=1).values
+    print(x.shape)
     x = np.nan_to_num(x.astype('float32'))
+    print(x.shape)
 
-    tsvd = TruncatedSVD()
-    tfidf = TfidfVectorizer()
+    tfidf = TfidfVectorizer(ngram_range=(1, 2), stop_words='english')
+    tsvd = TruncatedSVD(n_components=10, random_state = 2016)
     for col in columns:
         x = np.concatenate((x, tsvd.fit_transform(tfidf.fit_transform(df_all[col]))), axis=1)
+        print(x.shape)
 
     timer.done("Fim do tfidf")
 
@@ -194,51 +208,85 @@ def rmse(y, y_pred):
     mse = mean_squared_error(y, y_pred)
     return mse ** 0.5
 
+def rf_cross_val():
+    pass
+
+def xgb_grid_search(x, y):
+    xgb_reg = XGBRegressor(nthread=1)
+    params_xgb = {'max_depth': np.linspace(3, 15, 5),
+                  'learning_rate': np.linspace(0.001, 0.1, 5),
+                  'subsample': np.linspace(0.1, 0.9, 5),
+                  'colsample_bytree': np.linspace(0.1, 0.9, 5)}
+    fit_params_xgb = {'eval_metric': 'rmse'}
+    grid_xgb = GridSearchCV(xgb_reg,
+                            params_xgb,
+                            refit=False,
+                            verbose=3,
+                            scoring=rmse_scorer,
+                            error_score=100,
+                            n_jobs=15,
+                            fit_params=fit_params_xgb)
+
+class xgbDepot(XGBRegressor):
+
+    def predict(self, data, output_margin=False, ntree_limit=0):
+        y_pred = super(XGBRegressor,self).predict(data, output_margin, ntree_limit)
+        y_pred[y_pred > 3] = 3
+        y_pred[y_pred < 1] = 1
+
+        '''
+        res = []
+        foo = [1.00, 1.25, 1.33, 1.50, 1.67, 1.75, 2.00, 2.25, 2.33, 2.50, 2.67, 2.75, 3.00]
+        for i in range(len(foo) - 1):
+            res.append( (foo[i], foo[i+1]))
+
+        for inicio, fim in res:
+            media = (inicio + fim) / 2
+            y_pred[(y_pred > inicio) & (y_pred < media)] = inicio
+            y_pred[(y_pred > media)  & (y_pred < fim)] = fim
+        '''
+
+        return y_pred
+
 if __name__ == '__main__':
-
-    from sklearn.externals import joblib
-    from sklearn.metrics import make_scorer
-    from xgboost import XGBRegressor
-    import sys
-    import pandas as pd
-
-    x, y, x_test, id_test = process_data(*load_data())
-    joblib.dump(x, 'x.pkl')
-    joblib.dump(y, 'y.pkl')
-    joblib.dump(x_test, 'x_test.pkl')
-    joblib.dump(id_test, 'id_test.pkl')
-    # x = joblib.load('x.pkl')
-    # y = joblib.load('y.pkl')
-    # x_test = joblib.load('x_test.pkl')
-    # id_test = joblib.load('id_test.pkl')
+    #x, y, x_test, id_test = process_data(*load_data())
+    #joblib.dump(x, 'x.pkl')
+    #joblib.dump(y, 'y.pkl')
+    #joblib.dump(x_test, 'x_test.pkl')
+    #joblib.dump(id_test, 'id_test.pkl')
+    x = joblib.load('x.pkl')
+    y = joblib.load('y.pkl')
+    x_test = joblib.load('x_test.pkl')
+    id_test = joblib.load('id_test.pkl')
+    print(id_test.shape)
+    print(x_test.shape)
 
     rmse_scorer = make_scorer(rmse, greater_is_better=False)
 
-    xgbr = XGBRegressor(nthread=15,
-                        n_estimators=5000,
+    xgbr = xgbDepot(nthread=15,
+                        n_estimators=2000,
                         #colsample_bytree=0.7,
                         #min_child_weight=4.0,
                         #subsample=0.55,
                         #learning_rate=0.05,
                         #gamma=0.75
                         )
-    xgbr.fit(x, y, eval_metric='rmse')
-    y_pred = xgbr.predict(x_test)
-    y_pred[y_pred > 3] = 3
-    y_pred[y_pred < 1] = 1
-    pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
-    '''
+    #xgbr.fit(x, y, eval_metric='rmse')
+    #y_pred = xgbr.predict(x_test)
+    #pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
+
+
     rmse = cross_val_score(xgbr,
                            x,
                            y,
-                           cv=5,
+                           cv=10,
                            scoring=rmse_scorer,
                            verbose=255,
                            n_jobs=1,
                            fit_params={'eval_metric':'rmse'}
                            )
     print(np.mean(rmse), np.std(rmse))
-    '''
+
 
     sys.exit(0)
 
@@ -265,7 +313,6 @@ if __name__ == '__main__':
                            verbose=255,
                            n_jobs=-1)
     print(np.mean(rmse), np.std(rmse))
-
 
 
     rf = RandomForestRegressor(random_state=0)
@@ -309,22 +356,6 @@ if __name__ == '__main__':
     grid_gbr.fit(x, y)
     print(grid_gbr.best_score_)
     print(grid_gbr.best_params_)
-
-
-    xgb_reg = XGBRegressor(nthread=1)
-    params_xgb = {'max_depth': np.linspace(3, 15, 5),
-                  'learning_rate': np.linspace(0.001, 0.1, 5),
-                  'subsample': np.linspace(0.1, 0.9, 5),
-                  'colsample_bytree': np.linspace(0.1, 0.9, 5)}
-    fit_params_xgb = {'eval_metric': 'rmse'}
-    grid_xgb = GridSearchCV(xgb_reg,
-                            params_xgb,
-                            refit=False,
-                            verbose=3,
-                            scoring=rmse_scorer,
-                            error_score=100,
-                            n_jobs=15,
-                            fit_params=fit_params_xgb)
 
 
 # rfr
