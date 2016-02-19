@@ -6,6 +6,7 @@ Created on Mon Feb  1 17:18:03 2016
 """
 
 from sklearn.cross_validation import cross_val_score
+from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor, BaggingRegressor, GradientBoostingRegressor
 from sklearn.grid_search import GridSearchCV, RandomizedSearchCV
 
@@ -29,13 +30,17 @@ import time
 from sklearn.externals import joblib
 from sklearn.metrics import make_scorer
 from xgboost import XGBRegressor
-import sys
+
+import random
+random.seed(2016)
 
 stop = stopwords.words('english')
 
 wnl = WordNetLemmatizer()
 snow = SnowballStemmer('english')
 porter = PorterStemmer()
+
+
 
 class TimeCount(object):
     def __init__(self):
@@ -45,6 +50,29 @@ class TimeCount(object):
         print("%s: %s minutes ---" % (msg, round(((time.time() - self.start_time)/60), 2)))
         self.start_time = time.time()
 
+
+class xgbDepot(XGBRegressor):
+
+    def predict(self, data, output_margin=False, ntree_limit=0):
+        y_pred = super(XGBRegressor,self).predict(data, output_margin, ntree_limit)
+        y_pred[y_pred > 3] = 3
+        y_pred[y_pred < 1] = 1
+
+        '''
+        # Normalizar os resutlados dentro da faixa esperada
+        # Durante o cross validation so piora os dados
+        res = []
+        foo = [1.00, 1.25, 1.33, 1.50, 1.67, 1.75, 2.00, 2.25, 2.33, 2.50, 2.67, 2.75, 3.00]
+        for i in range(len(foo) - 1):
+            res.append( (foo[i], foo[i+1]))
+
+        for inicio, fim in res:
+            media = (inicio + fim) / 2
+            y_pred[(y_pred > inicio) & (y_pred < media)] = inicio
+            y_pred[(y_pred > media)  & (y_pred < fim)] = fim
+        '''
+
+        return y_pred
 
 def load_data():
     timer = TimeCount()
@@ -173,7 +201,7 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
     for col in columns:
         df_all[col] = df_all[col].map(lambda x: str_stemmer(x))
         df_all['n_word_'+col] = df_all[col].str.count('\ +')
-        df_all['n_char_'+col] = df_all[col].str.count('')
+        #df_all['n_char_'+col] = df_all[col].str.count('')
 
         if not col == 'search_term':
             df_all['n_search_word_in_' + col] = df_all.apply(lambda x: str_common_word(x['search_term'], x[col]), axis=1)
@@ -185,15 +213,12 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
         timer.done("Finalizado coluna "  + col + str(df_all.shape))
 
     x = df_all.drop(['id', 'product_uid', 'relevance'] + columns, axis=1).values
-    print(x.shape)
     x = np.nan_to_num(x.astype('float32'))
-    print(x.shape)
 
     tfidf = TfidfVectorizer(ngram_range=(1, 2), stop_words='english')
     tsvd = TruncatedSVD(n_components=10, random_state = 2016)
     for col in columns:
         x = np.concatenate((x, tsvd.fit_transform(tfidf.fit_transform(df_all[col]))), axis=1)
-        print(x.shape)
 
     timer.done("Fim do tfidf")
 
@@ -208,155 +233,147 @@ def rmse(y, y_pred):
     mse = mean_squared_error(y, y_pred)
     return mse ** 0.5
 
-def rf_cross_val():
-    pass
 
-def xgb_grid_search(x, y):
-    xgb_reg = XGBRegressor(nthread=1)
-    params_xgb = {'max_depth': np.linspace(3, 15, 5),
-                  'learning_rate': np.linspace(0.001, 0.1, 5),
-                  'subsample': np.linspace(0.1, 0.9, 5),
-                  'colsample_bytree': np.linspace(0.1, 0.9, 5)}
-    fit_params_xgb = {'eval_metric': 'rmse'}
-    grid_xgb = GridSearchCV(xgb_reg,
-                            params_xgb,
-                            refit=False,
-                            verbose=3,
-                            scoring=rmse_scorer,
-                            error_score=100,
-                            n_jobs=15,
-                            fit_params=fit_params_xgb)
-
-class xgbDepot(XGBRegressor):
-
-    def predict(self, data, output_margin=False, ntree_limit=0):
-        y_pred = super(XGBRegressor,self).predict(data, output_margin, ntree_limit)
-        y_pred[y_pred > 3] = 3
-        y_pred[y_pred < 1] = 1
-
-        '''
-        res = []
-        foo = [1.00, 1.25, 1.33, 1.50, 1.67, 1.75, 2.00, 2.25, 2.33, 2.50, 2.67, 2.75, 3.00]
-        for i in range(len(foo) - 1):
-            res.append( (foo[i], foo[i+1]))
-
-        for inicio, fim in res:
-            media = (inicio + fim) / 2
-            y_pred[(y_pred > inicio) & (y_pred < media)] = inicio
-            y_pred[(y_pred > media)  & (y_pred < fim)] = fim
-        '''
-
-        return y_pred
-
-if __name__ == '__main__':
-    #x, y, x_test, id_test = process_data(*load_data())
-    #joblib.dump(x, 'x.pkl')
-    #joblib.dump(y, 'y.pkl')
-    #joblib.dump(x_test, 'x_test.pkl')
-    #joblib.dump(id_test, 'id_test.pkl')
-    x = joblib.load('x.pkl')
-    y = joblib.load('y.pkl')
-    x_test = joblib.load('x_test.pkl')
-    id_test = joblib.load('id_test.pkl')
-    print(id_test.shape)
-    print(x_test.shape)
-
+def base_cross_val(est, x, y, fit_params=None):
     rmse_scorer = make_scorer(rmse, greater_is_better=False)
+    res = cross_val_score(est,
+                          x,
+                          y,
+                          cv=10,
+                          scoring=rmse_scorer,
+                          verbose=0,
+                          n_jobs=1,
+                          fit_params=fit_params,
+                          )
+    print(np.mean(res), np.std(res))
 
-    xgbr = xgbDepot(nthread=15,
-                        n_estimators=2000,
-                        #colsample_bytree=0.7,
-                        #min_child_weight=4.0,
-                        #subsample=0.55,
-                        #learning_rate=0.05,
-                        #gamma=0.75
+
+def base_randomized_grid_search(est, x, y, params, fit_params=None):
+    rmse_scorer = make_scorer(rmse, greater_is_better=False)
+    grid = RandomizedSearchCV(est,
+                              params,
+                              verbose=3,
+                              scoring=rmse_scorer,
+                              error_score=100,
+                              n_jobs=15,
+                              fit_params=fit_params,
+                              cv=5,
+                              n_iter=40,
+                              )
+
+    grid.fit(x, y)
+    return grid
+
+
+def base_grid_search(est, x, y, params, fit_params=None):
+    rmse_scorer = make_scorer(rmse, greater_is_better=False)
+    grid = GridSearchCV(est,
+                        params,
+                        verbose=3,
+                        scoring=rmse_scorer,
+                        error_score=100,
+                        n_jobs=15,
+                        fit_params=fit_params,
+                        cv=5
                         )
-    #xgbr.fit(x, y, eval_metric='rmse')
-    #y_pred = xgbr.predict(x_test)
-    #pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
+
+    grid.fit(x, y)
+    return grid
 
 
-    rmse = cross_val_score(xgbr,
-                           x,
-                           y,
-                           cv=10,
-                           scoring=rmse_scorer,
-                           verbose=255,
-                           n_jobs=1,
-                           fit_params={'eval_metric':'rmse'}
-                           )
-    print(np.mean(rmse), np.std(rmse))
+def gbr_grid_search(x, y, random=False):
+    gbr = GradientBoostingRegressor(random_state=0, init=rf)
+    params_gbr = {'loss': ['ls'],   # , 'lad', 'huber', 'quantile'],
+                  'learning_rate': np.linspace(0.0001, 0.5, 10),
+                  'max_depth': [10, 15, 20],
+                  'n_estimators': [300],
+                  'subsample': np.linspace(0.1, 1.0, 10),
+                  'max_features': ['sqrt']  # , 'log2', None]
+                  }
+
+    if not random:
+        grid = base_grid_search(gbr, x, y, params_gbr)
+    else:
+        grid = base_randomized_grid_search(gbr, x, y, params_gbr)
+    return grid
 
 
-    sys.exit(0)
-
-    rmse_scorer = make_scorer(rmse, greater_is_better=False)
-    rf = RandomForestRegressor(n_estimators=100,
-                               random_state=0)
-
-    rf = RandomForestRegressor(**{'oob_score': False,
-                                  'n_estimators': 50,
-                                  'max_depth': 15,
-                                  'max_features': 'sqrt',
-                                  'bootstrap': False,
-                                  'random_state' : 0})
-    clf = BaggingRegressor(rf,
-                           n_estimators=100,
-                           max_samples=0.1,
-                           random_state=25)
-
-    rmse = cross_val_score(clf,
-                           x,
-                           y,
-                           cv=5,
-                           scoring=rmse_scorer,
-                           verbose=255,
-                           n_jobs=-1)
-    print(np.mean(rmse), np.std(rmse))
-
-
+def rfr_grid_search(x, y, random=False):
     rf = RandomForestRegressor(random_state=0)
     params_rf = {'oob_score': [True, False],
                  'bootstrap': [True, False],
                  'max_features': ['sqrt', 'log2', None],
                  'max_depth': [3, 6, 10, 15],
                  'n_estimators': [20, 50, 100, 200]}
-    grid_rf = GridSearchCV(rf,
-                           params_rf,
-                           refit=False,
-                           verbose=255,
-                           scoring=rmse_scorer,
-                           error_score=100,
-                           n_jobs=15,
-                           # n_iter=20
-                           )
-    # grid_rf.fit(x, y)
-    # print(grid_rf.best_score_)
-    # print(grid_rf.best_params_)
 
-    gbr = GradientBoostingRegressor(random_state=0, init=rf)
-    params_gbr = {'loss': ['ls' ],#, 'lad', 'huber', 'quantile'],
-                  'learning_rate': np.linspace(0.0001, 0.5, 10),
-                  'max_depth': [10, 15, 20],
-                  'n_estimators': [100],
-                  'subsample': np.linspace(0.1, 1.0, 10),
-                  'max_features': ['sqrt']#, 'log2', None]
+    if not random:
+        grid = base_grid_search(rf, x, y, params_rf)
+    else:
+        grid = base_randomized_grid_search(rf, x, y, params_rf)
+
+    return grid
+
+
+def xgbr_grid_search(x, y, random=False):
+    xgbr = XGBRegressor(nthread=1)
+    params_xgb = {'max_depth': np.linspace(7, 15, 5, dtype='int32'),
+                  'learning_rate': np.linspace(0.01, 0.5, 5),
+                  'subsample': np.linspace(0.5, 1, 5),
+                  'colsample_bytree': np.linspace(0.5, 1, 5),
                   }
 
-    grid_gbr = RandomizedSearchCV(gbr,
-                            params_gbr,
-                            refit=False,
-                            verbose=255,
-                            scoring=rmse_scorer,
-                            error_score=-100,
-                            cv=5,
-                            n_jobs=15,
-                            pre_dispatch='n_jobs',
-                            n_iter=20)
-    grid_gbr.fit(x, y)
-    print(grid_gbr.best_score_)
-    print(grid_gbr.best_params_)
+    fit_params_xgb = {'eval_metric': 'rmse'}
 
+    if not random:
+        grid = base_grid_search(xgbr, x, y, params_xgb, fit_params_xgb)
+    else:
+        grid = base_randomized_grid_search(xgbr, x, y, params_xgb, fit_params_xgb)
+
+    return grid
+
+
+class MetaRegressor(BaseEstimator):
+    def fit(self, x, y=None, **fit_params):
+        self.xbr = xgbr_grid_search(x, y, True)
+        self.gbr = gbr_grid_search(x, y, True)
+        self.rfr = rfr_grid_search(x, y, True)
+
+        self.bagr = BaggingRegressor(self.rfr,
+                                     n_estimators=100,
+                                     max_samples=0.1,
+                                     random_state=25)
+
+        self.bagr.fit(x, y)
+
+    def predict(self, hd_searches):
+        y_pred_xbr = self.xbr.predict(x_test)
+        y_pred_gbr = self.gbr.predict(x_test)
+        y_pred_rfr = self.rfr.predict(x_test)
+        y_pred_bag = self.bagr.predict(x_test)
+
+        y_pred = (y_pred_xbr + y_pred_gbr + y_pred_rfr + y_pred_bag) / 5
+
+        y_pred[y_pred > 3] = 3
+        y_pred[y_pred < 1] = 1
+
+        return y_pred
+
+
+if __name__ == '__main__':
+    # x, y, x_test, id_test = process_data(*load_data())
+    # joblib.dump(x, 'x.pkl')
+    # joblib.dump(y, 'y.pkl')
+    # joblib.dump(x_test, 'x_test.pkl')
+    # joblib.dump(id_test, 'id_test.pkl')
+    x = joblib.load('x.pkl')
+    y = joblib.load('y.pkl')
+    x_test = joblib.load('x_test.pkl')
+    id_test = joblib.load('id_test.pkl')
+
+    est = MetaRegressor()
+    base_cross_val(est, x, y)
+
+    #pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
 
 # rfr
 # mean: 0.48109, std: 0.01171, params: {'oob_score': False, 'n_estimators': 200, 'max_depth': 15, 'max_features': 'sqrt', 'bootstrap': False}

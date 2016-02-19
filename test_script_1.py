@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 #from sklearn import pipeline, model_selection
 from sklearn import pipeline, grid_search
+from nltk.util import everygrams
 #from sklearn.feature_extraction import DictVectorizer
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import FeatureUnion
@@ -134,7 +135,7 @@ def fmean_squared_error(ground_truth, predictions):
 RMSE  = make_scorer(fmean_squared_error, greater_is_better=False)
 
 class cust_regression_vals(BaseEstimator, TransformerMixin):
-    def fit(self, x, y=None):
+    def fit(self, x, y=None, **fit_params):
         return self
     def transform(self, hd_searches):
         d_col_drops=['id','relevance','search_term','product_title','product_description','product_info','attr','brand']
@@ -144,7 +145,7 @@ class cust_regression_vals(BaseEstimator, TransformerMixin):
 class cust_txt_col(BaseEstimator, TransformerMixin):
     def __init__(self, key):
         self.key = key
-    def fit(self, x, y=None):
+    def fit(self, x, y=None, **fit_params):
         return self
     def transform(self, data_dict):
         return data_dict[self.key].apply(str)
@@ -234,12 +235,16 @@ clf = pipeline.Pipeline([
                         'txt3': 0.0,
                         'txt4': 0.5
                         },
-                n_jobs = -1
+                n_jobs = 10
                 )),
-        ('rfr', rfr)])
+        ('xgbr', xgbr)])
 
-param_grid = {'rfr__max_features': [10], 'rfr__max_depth': [20]}
-model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = -1, cv = 2, verbose = 20, scoring=RMSE)
+param_grid = {'xgbr__n_estimators': [3000],
+              'xgbr__max_depth': [3]
+
+              }
+model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = -1, cv = 2, verbose = 20, scoring=RMSE, fit_params=fit_params)
+fit_params = {'xgbr__eval_metric':'rmse'}
 model.fit(X_train, y_train)
 
 print("Best parameters found by grid search:")
@@ -248,5 +253,9 @@ print("Best CV score:")
 print(model.best_score_)
 
 y_pred = model.predict(X_test)
+
+y_pred[y_pred > 3] = 3
+y_pred[y_pred < 1] = 1
+
 pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission_test_script_1.csv',index=False)
 print("--- Training & Testing: %s minutes ---" % round(((time.time() - start_time)/60),2))
