@@ -30,9 +30,14 @@ import time
 from sklearn.externals import joblib
 from sklearn.metrics import make_scorer
 from xgboost import XGBRegressor
+from sklearn.svm import SVR, LinearSVR
+
+from sklearn.preprocessing import normalize
 
 import random
+from numpy import random as np_random
 random.seed(2016)
+np_random.seed(2016)
 
 stop = stopwords.words('english')
 
@@ -41,7 +46,7 @@ snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
 
-N_JOBS = 22
+N_JOBS = 15
 
 
 class TimeCount(object):
@@ -76,10 +81,15 @@ class xgbDepot(XGBRegressor):
 
         return y_pred
 
-def load_data():
+def load_data(samples=None):
     timer = TimeCount()
 
-    df_train = pd.read_csv('train.csv', encoding='ISO-8859-1')
+    if not samples == None:
+        df_train = pd.read_csv('train.csv', encoding='ISO-8859-1')[:samples]
+        df_test = pd.read_csv('test.csv', encoding='ISO-8859-1')[:samples]
+    else:
+        df_train = pd.read_csv('train.csv', encoding='ISO-8859-1')
+        df_test = pd.read_csv('test.csv', encoding='ISO-8859-1')
 
     df_desc = pd.read_csv('product_descriptions.csv')
 
@@ -95,7 +105,7 @@ def load_data():
     df_material['material'] = df_material['value']
     df_material.drop('value', axis=1, inplace=True)
 
-    df_test = pd.read_csv('test.csv', encoding='ISO-8859-1')
+
 
     timer.done("Carregando dados")
 
@@ -210,7 +220,7 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
     for col in columns:
         df_all[col] = df_all[col].map(lambda x: str_stemmer(x))
         df_all['n_word_'+col] = df_all[col].str.count('\ +')
-        #df_all['n_char_'+col] = df_all[col].str.count('')
+        df_all['n_char_'+col] = df_all[col].str.count('')
 
         if not col == 'search_term':
             df_all['n_search_word_in_' + col] = df_all.apply(lambda x: str_common_word(x['search_term'], x[col]), axis=1)
@@ -221,13 +231,25 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
             df_all['n_search_4grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 4, 4), axis=1)
         timer.done("Finalizado coluna "  + col + str(df_all.shape))
 
+    df_brand = pd.unique(df_all.brand.ravel())
+    d = {}
+    i = 1
+    for s in df_brand:
+        d[s] = i
+        i += 1
+    df_all['brand_feature'] = df_all['brand'].map(lambda x: d[x])
+
     x = df_all.drop(['id', 'product_uid', 'relevance'] + columns, axis=1).values
     x = np.nan_to_num(x.astype('float32'))
 
-    tfidf = TfidfVectorizer(ngram_range=(1, 2), stop_words='english')
-    tsvd = TruncatedSVD(n_components=10, random_state = 2016)
+    tfidf = TfidfVectorizer(ngram_range=(1, 3), stop_words='english')
+    tsvd = TruncatedSVD(n_components=15, algorithm='arpack')
     for col in columns:
-        x = np.concatenate((x, tsvd.fit_transform(tfidf.fit_transform(df_all[col]))), axis=1)
+        tf = tfidf.fit_transform(df_all[col])
+        x = np.concatenate((x,
+                            tsvd.fit_transform(tf),
+                            ), axis=1)
+        x = np.concatenate((x, ), axis=1)
 
     timer.done("Fim do tfidf")
 
@@ -263,11 +285,11 @@ def base_randomized_grid_search(est, x, y, params, fit_params=None):
                               params,
                               verbose=0,
                               scoring=rmse_scorer,
-                              error_score=100,
+                              error_score=-100,
                               n_jobs=N_JOBS,
                               fit_params=fit_params,
-                              cv=3,
-                              n_iter=30,
+                              cv=4,
+                              n_iter=50,
                               )
 
     grid.fit(x, y)
@@ -280,7 +302,7 @@ def base_grid_search(est, x, y, params, fit_params=None):
                         params,
                         verbose=3,
                         scoring=rmse_scorer,
-                        error_score=100,
+                        error_score=-100,
                         n_jobs=N_JOBS,
                         fit_params=fit_params,
                         cv=3
@@ -309,8 +331,8 @@ def gbr_grid_search(x, y, random=False):
 
 def rfr_grid_search(x, y, random=False):
     rf = RandomForestRegressor()
-    params_rf = {  # 'oob_score': [True, False],
-                 'bootstrap': [True, False],
+    params_rf = {'oob_score': [True, False],
+                 # 'bootstrap': [True, False],
                  'max_features': ['sqrt', 'log2', None],
                  'max_depth': [3, 6, 10, 15],
                  'n_estimators': np.linspace(10, 500, 5, dtype='int'),
@@ -346,7 +368,7 @@ def xgbr_grid_search(x, y, random=False):
 def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
     bagr = BaggingRegressor(base)
     params_bagr = {'max_samples': np.linspace(0.1, 1, 5),
-                   'n_estimators': np.linspace(10, 500, 5, dtype='int'),
+                   'n_estimators': np.linspace(10, 100, 5, dtype='int'),
                    'max_features': np.linspace(0.1, 1, 5),
                    }
     if not random:
@@ -356,51 +378,126 @@ def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
 
     return grid
 
+
+def svr_rbf_grid_search(x, y, random=False):
+    svr = SVR()
+    params_svr = {'C': np.linspace(0.01, 1.0, 5),
+                  'epsilon': np.linspace(0.0, 1.0, 5),
+                  'shrinking': [True, False],
+                  'tol': np.linspace(0.0001, 0.001, 5),
+                  'kernel': ['rbf'],
+                  }
+    if not random:
+        grid = base_grid_search(svr, x, y, params_svr)
+    else:
+        grid = base_randomized_grid_search(svr, x, y, params_svr)
+
+    return grid
+
+
+def svr_poly_grid_search(x, y, random=False):
+    svr = SVR()
+    params_svr = {'C': np.linspace(0.01, 1.0, 50),
+                  'epsilon': np.linspace(0.0, 1.0, 5),
+                  'degree': np.linspace(3, 10, 5, dtype='int'),
+                  'shrinking': [True, False],
+                  'tol': np.linspace(0.0001, 0.001, 5),
+                  'kernel': ['poly'],
+                  }
+    if not random:
+        grid = base_grid_search(svr, x, y, params_svr)
+    else:
+        grid = base_randomized_grid_search(svr, x, y, params_svr)
+
+    return grid
+
+
+def svr_sigmoid_grid_search(x, y, random=False):
+    svr = SVR()
+    params_svr = {'C': np.linspace(0.01, 1.0, 5),
+                  'epsilon': np.linspace(0.0, 1.0, 5),
+                  'shrinking': [True, False],
+                  'tol': np.linspace(0.0001, 0.001, 5),
+                  'kernel': ['sigmoid'],
+                  }
+    if not random:
+        grid = base_grid_search(svr, x, y, params_svr)
+    else:
+        grid = base_randomized_grid_search(svr, x, y, params_svr)
+
+    return grid
+
+
+def svr_linear_grid_search(x, y, random=False):
+    svr = LinearSVR()
+    params_svr = {'C': np.linspace(0.01, 1.0, 5),
+                  'epsilon': np.linspace(0.0, 1.0, 5),
+                  'tol': np.linspace(0.0001, 0.001, 5),
+                  }
+    if not random:
+        grid = base_grid_search(svr, x, y, params_svr)
+    else:
+        grid = base_randomized_grid_search(svr, x, y, params_svr)
+
+    return grid
+
+
 class MetaRegressor(BaseEstimator):
     def fit(self, x, y=None, **fit_params):
+        timer = TimeCount()
+        grids = []
         self.scores = []
+        self.estimators = []
 
-        timer= TimeCount()
-
-        self.xbr = xgbr_grid_search(x, y, True)
-        self.scores.append(self.xbr.best_score_ * -1)
-        self.xbr = self.xbr.best_estimator_
+        grids.append(xgbr_grid_search(x, y, True))
         timer.done("XGBR")
 
-        self.gbr = gbr_grid_search(x, y, True)
-        self.scores.append(self.gbr.best_score_ * -1)
-        self.gbr = self.gbr.best_estimator_
+        grids.append(gbr_grid_search(x, y, True))
         timer.done("GBR")
 
-        self.rfr = rfr_grid_search(x, y, True)
-        self.scores.append(self.rfr.best_score_ * -1)
-        self.rfr = self.rfr.best_estimator_
+        grids.append(rfr_grid_search(x, y, True))
         timer.done("RFR")
 
-        self.bagr = bagr_grid_search(x, y, random=True)
-        self.scores.append(self.bagr.best_score_ * -1)
-        self.bagr = self.bagr.best_estimator_
-        timer.done("BAG")
+        grids.append(bagr_grid_search(x, y, random=True))
+        timer.done("BAGR")
+
+        # grids.append(svr_rbf_grid_search(x, y, random=True))
+        # timer.done("SVR - RBF")
+
+        # grids.append(svr_poly_grid_search(x, y, random=True))
+        # timer.done("SVR - POLY")
+
+        # grids.append(svr_sigmoid_grid_search(x, y, random=True))
+        # timer.done("SVR - Sigmoid")
+
+        # grids.append(svr_linear_grid_search(x, y, random=True))
+        # timer.done("SVR - Linear")
+
+        for grid in grids:
+            self.scores.append(grid.best_score_ * -1)
+            est = grid.best_estimator_
+            self.estimators.append(est)
+            print("{} ({}) = {} ".format(est.__class__,
+                                         grid.best_score_,
+                                         grid.best_params_))
 
         return self
 
     def predict(self, x):
 
-        y_pred_xbr = self.xbr.predict(x)
-        y_pred_gbr = self.gbr.predict(x)
-        y_pred_rfr = self.rfr.predict(x)
-        y_pred_bag = self.bagr.predict(x)
+        preds = []
+        for est in self.estimators:
+            preds.append(est.predict(x))
 
-        y_pred = np.vstack((y_pred_xbr, y_pred_gbr, y_pred_rfr, y_pred_bag))
+        preds = np.asarray(preds)
 
+        self.scores = np.asarray(self.scores) * 1
         factor = np.min(self.scores) / self.scores
-        print(self.scores)
-        print(factor)
-        print(np.sum(factor))
+        factor = factor ** 1
 
-        y_pred = np.expand_dims(factor, 1) * y_pred
+        preds = np.expand_dims(factor, 1) * preds
 
-        y_pred = np.sum(y_pred, axis=0)/np.sum(factor)
+        y_pred = np.sum(preds, axis=0)/np.sum(factor)
 
         y_pred[y_pred > 3] = 3
         y_pred[y_pred < 1] = 1
@@ -409,18 +506,21 @@ class MetaRegressor(BaseEstimator):
 
 
 if __name__ == '__main__':
-    # x, y, x_test, id_test = process_data(*load_data())
-    # joblib.dump(x, 'x.pkl')
-    # joblib.dump(y, 'y.pkl')
-    # joblib.dump(x_test, 'x_test.pkl')
-    # joblib.dump(id_test, 'id_test.pkl')
-    x = joblib.load('x.pkl')[:1000]
-    y = joblib.load('y.pkl')[:1000]
-    x_test = joblib.load('x_test.pkl')
-    id_test = joblib.load('id_test.pkl')
+    x, y, x_test, id_test = process_data(*load_data())
+    joblib.dump(x, 'x.pkl')
+    joblib.dump(y, 'y.pkl')
+    joblib.dump(x_test, 'x_test.pkl')
+    joblib.dump(id_test, 'id_test.pkl')
+    # x = joblib.load('x.pkl')[:1000]
+    # y = joblib.load('y.pkl')[:1000]
+    # x_test = joblib.load('x_test.pkl')
+    # id_test = joblib.load('id_test.pkl')
 
     est = MetaRegressor()
-    base_cross_val(est, x, y)
+
+    x_l2 = normalize(x, axis=0)
+    base_cross_val(est, x_l2, y)
+
     base_cross_val(XGBRegressor(n_estimators=500), x, y)
 
-    #pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
+    # pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
