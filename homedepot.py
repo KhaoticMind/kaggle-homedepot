@@ -105,8 +105,6 @@ def load_data(samples=None):
     df_material['material'] = df_material['value']
     df_material.drop('value', axis=1, inplace=True)
 
-
-
     timer.done("Carregando dados")
 
     return (df_train, df_brand, df_material, df_desc, df_test)
