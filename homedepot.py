@@ -46,7 +46,7 @@ snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
 
-N_JOBS = 15
+N_JOBS = 8
 
 
 class TimeCount(object):
@@ -506,21 +506,25 @@ class MetaRegressor(BaseEstimator):
 
 
 if __name__ == '__main__':
-    x, y, x_test, id_test = process_data(*load_data())
-    joblib.dump(x, 'x.pkl')
-    joblib.dump(y, 'y.pkl')
-    joblib.dump(x_test, 'x_test.pkl')
-    joblib.dump(id_test, 'id_test.pkl')
-    # x = joblib.load('x.pkl')[:1000]
-    # y = joblib.load('y.pkl')[:1000]
-    # x_test = joblib.load('x_test.pkl')
-    # id_test = joblib.load('id_test.pkl')
+    # x, y, x_test, id_test = process_data(*load_data())
+    # joblib.dump(x, 'x.pkl')
+    # joblib.dump(y, 'y.pkl')
+    # joblib.dump(x_test, 'x_test.pkl')
+    # joblib.dump(id_test, 'id_test.pkl')
+    x = joblib.load('x.pkl')
+    y = joblib.load('y.pkl')
+    x_test = joblib.load('x_test.pkl')
+    id_test = joblib.load('id_test.pkl')
 
     est = MetaRegressor()
+    x = normalize(x, axis=0)
+    x_test = normalize(x_test, axis=0)
 
-    x_l2 = normalize(x, axis=0)
-    base_cross_val(est, x_l2, y)
-
+    '''
+    base_cross_val(est, x, y)
     base_cross_val(XGBRegressor(n_estimators=500), x, y)
+    '''
 
-    # pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission.csv',index=False)
+    est.fit(x, y)
+    y_pred = est.predict(x_test)
+    pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('meta_submission.csv',index=False)
