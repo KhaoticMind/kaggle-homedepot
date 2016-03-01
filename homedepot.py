@@ -15,7 +15,7 @@ from sklearn.decomposition import TruncatedSVD
 
 import pandas as pd
 from nltk.tokenize import word_tokenize
-from nltk.util import everygrams
+from nltk.util import ngrams
 
 from nltk.stem.snowball import SnowballStemmer
 from nltk.stem.wordnet import WordNetLemmatizer
@@ -29,10 +29,12 @@ import time
 
 from sklearn.externals import joblib
 from sklearn.metrics import make_scorer
-from xgboost import XGBRegressor
+#from xgboost import XGBRegressor
 from sklearn.svm import SVR, LinearSVR
 
 from sklearn.preprocessing import normalize
+
+from scipy.sparse import hstack
 
 import random
 from numpy import random as np_random
@@ -56,30 +58,6 @@ class TimeCount(object):
     def done(self, msg):
         print("%s: %s minutes ---" % (msg, round(((time.time() - self.start_time)/60), 2)))
         self.start_time = time.time()
-
-
-class xgbDepot(XGBRegressor):
-
-    def predict(self, data, output_margin=False, ntree_limit=0):
-        y_pred = super(XGBRegressor,self).predict(data, output_margin, ntree_limit)
-        y_pred[y_pred > 3] = 3
-        y_pred[y_pred < 1] = 1
-
-        '''
-        # Normalizar os resutlados dentro da faixa esperada
-        # Durante o cross validation isso acabou piorando os resultados
-        res = []
-        foo = [1.00, 1.25, 1.33, 1.50, 1.67, 1.75, 2.00, 2.25, 2.33, 2.50, 2.67, 2.75, 3.00]
-        for i in range(len(foo) - 1):
-            res.append( (foo[i], foo[i+1]))
-
-        for inicio, fim in res:
-            media = (inicio + fim) / 2
-            y_pred[(y_pred > inicio) & (y_pred < media)] = inicio
-            y_pred[(y_pred > media)  & (y_pred < fim)] = fim
-        '''
-
-        return y_pred
 
 def load_data(samples=None):
     timer = TimeCount()
@@ -109,6 +87,56 @@ def load_data(samples=None):
 
     return (df_train, df_brand, df_material, df_desc, df_test)
 
+
+def second_process(df_train, df_brand, df_material, df_desc, df_test):
+    timer = TimeCount()
+
+    num_train = df_train.shape[0]
+    id_test = df_test['id']
+    y = df_train['relevance'].values
+    
+    if df_test is not None:
+        df_all = pd.concat((df_train, df_test), axis=0, ignore_index=True)
+        del df_test
+    else:
+        df_all = df_train
+
+    df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
+    df_all = pd.merge(df_all, df_desc, how='left', on='product_uid')
+    #df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
+    #print(df_all.shape)
+
+    del df_brand, df_material, df_desc
+
+    df_all.fillna('', inplace=True)
+
+    columns = ['search_term', 'product_title', 'product_description',
+                'brand'] #'material',
+
+    timer.done("Finalizando primeiro processamento")
+
+    tfidf = TfidfVectorizer(ngram_range=(2, 5), analyzer='char')
+    tsvd = TruncatedSVD(n_components=100, algorithm='arpack')    
+    x = None
+    for col in columns:
+        res = tfidf.fit_transform(df_all[col])
+        
+        if x is None:
+            x = res
+        else:
+            x = hstack([x, res])
+        print(x.shape)
+        timer.done('TFIDF for column {}'.format(col))
+    
+    print(x.shape)
+    x = tsvd.fit_transform(x)    
+    
+    timer.done("Fim do SVD")
+
+    x_train = x[:num_train]
+    x_test = x[num_train:]
+    return (x_train, y, x_test, id_test)
+    
 
 def process_data(df_train, df_brand, df_material, df_desc, df_test):
     timer = TimeCount()
@@ -187,12 +215,12 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
         words2 = str2.split()
         return sum(words2.count(word) for word in words1)
 
-    def str_common_grams(str1, str2, min_len=3, max_len=4):
+    def str_common_grams(str1, str2, length=3):
         '''Return how many times the ngrams (of length min_len to max_len) of str1
         appeared on str2
         '''
-        grams1 = list(everygrams(str1, min_len, max_len))
-        grams2 = list(everygrams(str2, min_len, max_len))
+        grams1 = list(ngrams(str1, length))
+        grams2 = list(ngrams(str2, length))
         return sum(grams2.count(gram) for gram in grams1)
 
     if df_test is not None:
@@ -224,9 +252,9 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
             df_all['n_search_word_in_' + col] = df_all.apply(lambda x: str_common_word(x['search_term'], x[col]), axis=1)
             df_all['word_ratio_' + col] = (df_all['n_search_word_in_' + col] / df_all['n_word_search_term'])
 
-            df_all['n_search_2grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 2, 2), axis=1)
-            df_all['n_search_3grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 3, 3), axis=1)
-            df_all['n_search_4grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 4, 4), axis=1)
+            df_all['n_search_2grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 2), axis=1)
+            df_all['n_search_3grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 3), axis=1)
+            df_all['n_search_4grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 4), axis=1)
         timer.done("Finalizado coluna "  + col + str(df_all.shape))
 
     df_brand = pd.unique(df_all.brand.ravel())
@@ -447,8 +475,8 @@ class MetaRegressor(BaseEstimator):
         self.scores = []
         self.estimators = []
 
-        grids.append(xgbr_grid_search(x, y, True))
-        timer.done("XGBR")
+        #grids.append(xgbr_grid_search(x, y, True))
+        #timer.done("XGBR")
 
         grids.append(gbr_grid_search(x, y, True))
         timer.done("GBR")
@@ -459,17 +487,17 @@ class MetaRegressor(BaseEstimator):
         grids.append(bagr_grid_search(x, y, random=True))
         timer.done("BAGR")
 
-        # grids.append(svr_rbf_grid_search(x, y, random=True))
-        # timer.done("SVR - RBF")
+        grids.append(svr_rbf_grid_search(x, y, random=True))
+        timer.done("SVR - RBF")
 
-        # grids.append(svr_poly_grid_search(x, y, random=True))
-        # timer.done("SVR - POLY")
+        grids.append(svr_poly_grid_search(x, y, random=True))
+        timer.done("SVR - POLY")
 
-        # grids.append(svr_sigmoid_grid_search(x, y, random=True))
-        # timer.done("SVR - Sigmoid")
+        grids.append(svr_sigmoid_grid_search(x, y, random=True))
+        timer.done("SVR - Sigmoid")
 
-        # grids.append(svr_linear_grid_search(x, y, random=True))
-        # timer.done("SVR - Linear")
+        grids.append(svr_linear_grid_search(x, y, random=True))
+        timer.done("SVR - Linear")
 
         for grid in grids:
             self.scores.append(grid.best_score_ * -1)
@@ -504,15 +532,16 @@ class MetaRegressor(BaseEstimator):
 
 
 if __name__ == '__main__':
-    # x, y, x_test, id_test = process_data(*load_data())
-    # joblib.dump(x, 'x.pkl')
-    # joblib.dump(y, 'y.pkl')
-    # joblib.dump(x_test, 'x_test.pkl')
-    # joblib.dump(id_test, 'id_test.pkl')
-    x = joblib.load('x.pkl')
-    y = joblib.load('y.pkl')
-    x_test = joblib.load('x_test.pkl')
-    id_test = joblib.load('id_test.pkl')
+    #x, y, x_test, id_test = process_data(*load_data())
+    x, y, x_test, id_test = second_process(*load_data(5000))
+    joblib.dump(x, 'x.pkl')
+    joblib.dump(y, 'y.pkl')
+    joblib.dump(x_test, 'x_test.pkl')
+    joblib.dump(id_test, 'id_test.pkl')
+    #x = joblib.load('x.pkl')
+    #y = joblib.load('y.pkl')
+    #x_test = joblib.load('x_test.pkl')
+    #id_test = joblib.load('id_test.pkl')
 
     est = MetaRegressor()
     x = normalize(x, axis=0)
