@@ -10,7 +10,7 @@ from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor, BaggingRegressor, GradientBoostingRegressor
 from sklearn.grid_search import GridSearchCV, RandomizedSearchCV
 
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.decomposition import TruncatedSVD
 
 import pandas as pd
@@ -29,7 +29,7 @@ import time
 
 from sklearn.externals import joblib
 from sklearn.metrics import make_scorer
-#from xgboost import XGBRegressor
+from xgboost import XGBRegressor
 from sklearn.svm import SVR, LinearSVR
 
 from sklearn.preprocessing import normalize
@@ -38,6 +38,12 @@ from scipy.sparse import hstack
 
 import random
 from numpy import random as np_random
+
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Activation
+from keras.optimizers import SGD
+from sklearn.cross_validation import train_test_split
+
 random.seed(2016)
 np_random.seed(2016)
 
@@ -48,7 +54,7 @@ snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
 
-N_JOBS = 8
+N_JOBS = 2
 
 
 class TimeCount(object):
@@ -77,18 +83,38 @@ def load_data(samples=None):
     # Pegue todos os materiais, brands e funcões (usadas pelos avaliadores)
     df_brand = df_attr[df_attr['name'] == 'MFG Brand Name'][['product_uid', 'value']]
     df_brand['brand'] = df_brand['value']
-    df_brand.drop('value', axis=1, inplace=True)
-
-    df_material = df_attr[df_attr['name'] == 'Material'][['product_uid', 'value']]
-    df_material['material'] = df_material['value']
-    df_material.drop('value', axis=1, inplace=True)
+    df_brand.drop('value', axis=1, inplace=True)  
+    
+    material = dict()
+    df_attr['about_material'] = df_attr['name'].str.lower().str.contains('material')
+    for row in df_attr[df_attr['about_material']].iterrows():
+        r = row[1]
+        product = r['product_uid']
+        value = r['value']
+        material.setdefault(product, '')
+        material[product] = material[product] + ' ' + str(value)
+    df_material = pd.DataFrame.from_dict(material, orient='index') 
+    df_material = df_material.reset_index()
+    df_material.columns = ['product_uid', 'material']
+    
+    color = dict()
+    df_attr['about_color'] = df_attr['name'].str.lower().str.contains('color')
+    for row in df_attr[df_attr['about_color']].iterrows():
+        r = row[1]
+        product = r['product_uid']
+        value = r['value']
+        color.setdefault(product, '')
+        color[product] = color[product] + ' ' + str(value)
+    df_color = pd.DataFrame.from_dict(color, orient='index') 
+    df_color = df_material.reset_index()
+    df_color.columns = ['product_uid', 'color']
 
     timer.done("Carregando dados")
 
-    return (df_train, df_brand, df_material, df_desc, df_test)
+    return (df_train, df_brand, df_material, df_color, df_desc, df_test)
 
 
-def second_process(df_train, df_brand, df_material, df_desc, df_test):
+def second_process(df_train, df_brand, df_material, df_color, df_desc, df_test):
     timer = TimeCount()
 
     num_train = df_train.shape[0]
@@ -103,22 +129,25 @@ def second_process(df_train, df_brand, df_material, df_desc, df_test):
 
     df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
     df_all = pd.merge(df_all, df_desc, how='left', on='product_uid')
-    #df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
+    df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
+    df_all = pd.merge(df_all, df_color, how='left', on='product_uid')
     #print(df_all.shape)
 
-    del df_brand, df_material, df_desc
+    del df_brand, df_material, df_desc, df_color
 
-    df_all.fillna('', inplace=True)
+    df_all.fillna(0, inplace=True)
 
     columns = ['search_term', 'product_title', 'product_description',
-                'brand'] #'material',
+                'brand', 'material', 'color']
 
     timer.done("Finalizando primeiro processamento")
 
-    tfidf = TfidfVectorizer(ngram_range=(2, 5), analyzer='char')
-    tsvd = TruncatedSVD(n_components=100, algorithm='arpack')    
+    tfidf = TfidfVectorizer(ngram_range=(2, 5), analyzer='char_wb', strip_accents='unicode')
+    #tfidf = CountVectorizer(ngram_range=(2, 5), analyzer='char', strip_accents='unicode')
+    tsvd = TruncatedSVD(n_components=500)
     x = None
-    for col in columns:
+    for col in columns:        
+        df_all[col][df_all[col] == np.nan] = ''
         res = tfidf.fit_transform(df_all[col])
         
         if x is None:
@@ -128,9 +157,8 @@ def second_process(df_train, df_brand, df_material, df_desc, df_test):
         print(x.shape)
         timer.done('TFIDF for column {}'.format(col))
     
-    print(x.shape)
     x = tsvd.fit_transform(x)    
-    
+    print(x.shape)
     timer.done("Fim do SVD")
 
     x_train = x[:num_train]
@@ -138,7 +166,7 @@ def second_process(df_train, df_brand, df_material, df_desc, df_test):
     return (x_train, y, x_test, id_test)
     
 
-def process_data(df_train, df_brand, df_material, df_desc, df_test):
+def process_data(df_train, df_brand, df_material, df_color, df_desc, df_test):
     timer = TimeCount()
 
     num_train = df_train.shape[0]
@@ -146,6 +174,7 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
     y = df_train['relevance'].values
 
     def str_stemmer(s):
+        s = str(s)
         s = s.lower()
         s = re.sub(r"(\w)\.([A-Z])", r"\1 \2", s) ##'desgruda' palavras que estão juntas
 
@@ -231,15 +260,16 @@ def process_data(df_train, df_brand, df_material, df_desc, df_test):
 
     df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
     df_all = pd.merge(df_all, df_desc, how='left', on='product_uid')
-    #df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
+    df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
+    df_all = pd.merge(df_all, df_color, how='left', on='product_uid')
     #print(df_all.shape)
 
-    del df_brand, df_material, df_desc
+    del df_brand, df_material, df_desc, df_color
 
     df_all.fillna('', inplace=True)
 
     columns = ['search_term', 'product_title', 'product_description',
-                'brand'] #'material',
+                'brand', 'material', 'color']
 
     timer.done("Finalizando primeiro processamento")
 
@@ -314,8 +344,8 @@ def base_randomized_grid_search(est, x, y, params, fit_params=None):
                               error_score=-100,
                               n_jobs=N_JOBS,
                               fit_params=fit_params,
-                              cv=4,
-                              n_iter=50,
+                              cv=3,
+                              n_iter=20,
                               )
 
     grid.fit(x, y)
@@ -468,6 +498,22 @@ def svr_linear_grid_search(x, y, random=False):
     return grid
 
 
+def do_keras(X_train, X_test, y_train, y_test):
+    model = Sequential()
+    print(X_train.shape)
+    model.add(Dense(250, input_dim=X_train.shape[1], activation='linear'))
+    model.add(Dropout(0.5))
+    model.add(Dense(125, activation='relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(125, activation='linear'))
+    model.add(Dropout(0.5))
+    model.add(Dense(1, activation='relu'))
+    
+    sgd = SGD(momentum=0.9, nesterov=True)
+    model.compile(loss='mse', optimizer=sgd)
+    model.fit(X_train, y_train, batch_size=64, nb_epoch=100, verbose=True)
+    return model.evaluate(X_test, y_test)
+
 class MetaRegressor(BaseEstimator):
     def fit(self, x, y=None, **fit_params):
         timer = TimeCount()
@@ -532,8 +578,8 @@ class MetaRegressor(BaseEstimator):
 
 
 if __name__ == '__main__':
-    #x, y, x_test, id_test = process_data(*load_data())
-    x, y, x_test, id_test = second_process(*load_data(5000))
+    x, y, x_test, id_test = process_data(*load_data(5000))
+    # x, y, x_test, id_test = second_process(*load_data(5000))
     joblib.dump(x, 'x.pkl')
     joblib.dump(y, 'y.pkl')
     joblib.dump(x_test, 'x_test.pkl')
@@ -546,12 +592,15 @@ if __name__ == '__main__':
     est = MetaRegressor()
     x = normalize(x, axis=0)
     x_test = normalize(x_test, axis=0)
+    
+    #print(do_keras(*train_test_split(x, y, test_size=0.25)))
 
-    '''
+    
     base_cross_val(est, x, y)
     base_cross_val(XGBRegressor(n_estimators=500), x, y)
     '''
-
     est.fit(x, y)
     y_pred = est.predict(x_test)
     pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('meta_submission.csv',index=False)
+    '''
+    
