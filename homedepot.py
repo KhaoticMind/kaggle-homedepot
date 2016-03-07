@@ -10,7 +10,7 @@ from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor, BaggingRegressor, GradientBoostingRegressor
 from sklearn.grid_search import GridSearchCV, RandomizedSearchCV
 
-from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 
 import pandas as pd
@@ -40,9 +40,8 @@ import random
 from numpy import random as np_random
 
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Activation
+from keras.layers import Dense, Dropout
 from keras.optimizers import SGD
-from sklearn.cross_validation import train_test_split
 
 random.seed(2016)
 np_random.seed(2016)
@@ -54,7 +53,7 @@ snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
 
-N_JOBS = 2
+N_JOBS = 20
 
 
 class TimeCount(object):
@@ -83,8 +82,8 @@ def load_data(samples=None):
     # Pegue todos os materiais, brands e funcões (usadas pelos avaliadores)
     df_brand = df_attr[df_attr['name'] == 'MFG Brand Name'][['product_uid', 'value']]
     df_brand['brand'] = df_brand['value']
-    df_brand.drop('value', axis=1, inplace=True)  
-    
+    df_brand.drop('value', axis=1, inplace=True)
+
     material = dict()
     df_attr['about_material'] = df_attr['name'].str.lower().str.contains('material')
     for row in df_attr[df_attr['about_material']].iterrows():
@@ -93,10 +92,10 @@ def load_data(samples=None):
         value = r['value']
         material.setdefault(product, '')
         material[product] = material[product] + ' ' + str(value)
-    df_material = pd.DataFrame.from_dict(material, orient='index') 
+    df_material = pd.DataFrame.from_dict(material, orient='index')
     df_material = df_material.reset_index()
     df_material.columns = ['product_uid', 'material']
-    
+
     color = dict()
     df_attr['about_color'] = df_attr['name'].str.lower().str.contains('color')
     for row in df_attr[df_attr['about_color']].iterrows():
@@ -105,8 +104,8 @@ def load_data(samples=None):
         value = r['value']
         color.setdefault(product, '')
         color[product] = color[product] + ' ' + str(value)
-    df_color = pd.DataFrame.from_dict(color, orient='index') 
-    df_color = df_material.reset_index()
+    df_color = pd.DataFrame.from_dict(color, orient='index')
+    df_color = df_color.reset_index()
     df_color.columns = ['product_uid', 'color']
 
     timer.done("Carregando dados")
@@ -120,7 +119,7 @@ def second_process(df_train, df_brand, df_material, df_color, df_desc, df_test):
     num_train = df_train.shape[0]
     id_test = df_test['id']
     y = df_train['relevance'].values
-    
+
     if df_test is not None:
         df_all = pd.concat((df_train, df_test), axis=0, ignore_index=True)
         del df_test
@@ -146,25 +145,25 @@ def second_process(df_train, df_brand, df_material, df_color, df_desc, df_test):
     #tfidf = CountVectorizer(ngram_range=(2, 5), analyzer='char', strip_accents='unicode')
     tsvd = TruncatedSVD(n_components=500)
     x = None
-    for col in columns:        
+    for col in columns:
         df_all[col][df_all[col] == np.nan] = ''
         res = tfidf.fit_transform(df_all[col])
-        
+
         if x is None:
             x = res
         else:
             x = hstack([x, res])
         print(x.shape)
         timer.done('TFIDF for column {}'.format(col))
-    
-    x = tsvd.fit_transform(x)    
+
+    x = tsvd.fit_transform(x)
     print(x.shape)
     timer.done("Fim do SVD")
 
     x_train = x[:num_train]
     x_test = x[num_train:]
     return (x_train, y, x_test, id_test)
-    
+
 
 def process_data(df_train, df_brand, df_material, df_color, df_desc, df_test):
     timer = TimeCount()
@@ -277,6 +276,9 @@ def process_data(df_train, df_brand, df_material, df_color, df_desc, df_test):
         df_all[col] = df_all[col].map(lambda x: str_stemmer(x))
         df_all['n_word_'+col] = df_all[col].str.count('\ +')
         df_all['n_char_'+col] = df_all[col].str.count('')
+        df_all['2grams_'+col] = df_all[col].apply(lambda x: len(list(ngrams(x, 2))))
+        df_all['3grams_'+col] = df_all[col].apply(lambda x: len(list(ngrams(x, 3))))
+        df_all['4grams_'+col] = df_all[col].apply(lambda x: len(list(ngrams(x, 4))))
 
         if not col == 'search_term':
             df_all['n_search_word_in_' + col] = df_all.apply(lambda x: str_common_word(x['search_term'], x[col]), axis=1)
@@ -285,6 +287,10 @@ def process_data(df_train, df_brand, df_material, df_color, df_desc, df_test):
             df_all['n_search_2grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 2), axis=1)
             df_all['n_search_3grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 3), axis=1)
             df_all['n_search_4grams_in_'+ col] = df_all.apply(lambda x: str_common_grams(x['search_term'], x[col], 4), axis=1)
+
+            df_all['2grams_raio_' +  col] = (df_all['n_search_2grams_in_'+col] / df_all['2grams_search_term'])
+            df_all['3grams_raio_' +  col] = (df_all['n_search_3grams_in_'+col] / df_all['3grams_search_term'])
+            df_all['4grams_raio_' +  col] = (df_all['n_search_4grams_in_'+col] / df_all['4grams_search_term'])
         timer.done("Finalizado coluna "  + col + str(df_all.shape))
 
     df_brand = pd.unique(df_all.brand.ravel())
@@ -498,20 +504,31 @@ def svr_linear_grid_search(x, y, random=False):
     return grid
 
 
-def do_keras(X_train, X_test, y_train, y_test):
+def get_keras(n_columns):
+    def rmse(y_true, y_pred):
+        from keras import backend as k
+        from keras.objectives import mean_squared_error
+
+        return k.sqrt(mean_squared_error(y_true, y_pred))
+
     model = Sequential()
-    print(X_train.shape)
-    model.add(Dense(250, input_dim=X_train.shape[1], activation='linear'))
-    model.add(Dropout(0.5))
-    model.add(Dense(125, activation='relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(125, activation='linear'))
-    model.add(Dropout(0.5))
+
+    model.add(Dense(64, input_dim=n_columns, activation='linear'))
+    #model.add(Dropout(0.5))
+    model.add(Dense(32, activation='relu'))
+    #model.add(Dropout(0.5))
+    #model.add(Dense(64, activation='linear'))
+    #model.add(Dropout(0.5))
     model.add(Dense(1, activation='relu'))
-    
+
     sgd = SGD(momentum=0.9, nesterov=True)
-    model.compile(loss='mse', optimizer=sgd)
-    model.fit(X_train, y_train, batch_size=64, nb_epoch=100, verbose=True)
+    model.compile(loss=rmse, optimizer=sgd)
+    return model
+
+
+def do_keras(X_train, X_test, y_train, y_test):
+    model = get_keras(X_train.shape[1])
+    model.fit(X_train, y_train, batch_size=64)
     return model.evaluate(X_test, y_test)
 
 class MetaRegressor(BaseEstimator):
@@ -521,8 +538,8 @@ class MetaRegressor(BaseEstimator):
         self.scores = []
         self.estimators = []
 
-        #grids.append(xgbr_grid_search(x, y, True))
-        #timer.done("XGBR")
+        grids.append(xgbr_grid_search(x, y, True))
+        timer.done("XGBR")
 
         grids.append(gbr_grid_search(x, y, True))
         timer.done("GBR")
@@ -533,17 +550,17 @@ class MetaRegressor(BaseEstimator):
         grids.append(bagr_grid_search(x, y, random=True))
         timer.done("BAGR")
 
-        grids.append(svr_rbf_grid_search(x, y, random=True))
-        timer.done("SVR - RBF")
+        #grids.append(svr_rbf_grid_search(x, y, random=True))
+        #timer.done("SVR - RBF")
 
-        grids.append(svr_poly_grid_search(x, y, random=True))
-        timer.done("SVR - POLY")
+        #grids.append(svr_poly_grid_search(x, y, random=True))
+        #timer.done("SVR - POLY")
 
-        grids.append(svr_sigmoid_grid_search(x, y, random=True))
-        timer.done("SVR - Sigmoid")
+        #grids.append(svr_sigmoid_grid_search(x, y, random=True))
+        #timer.done("SVR - Sigmoid")
 
-        grids.append(svr_linear_grid_search(x, y, random=True))
-        timer.done("SVR - Linear")
+        #grids.append(svr_linear_grid_search(x, y, random=True))
+        #timer.done("SVR - Linear")
 
         for grid in grids:
             self.scores.append(grid.best_score_ * -1)
@@ -553,13 +570,24 @@ class MetaRegressor(BaseEstimator):
                                          grid.best_score_,
                                          grid.best_params_))
 
+        '''            
+        keras_r = get_keras(x.shape[1])
+        keras_r.fit(x, y, nb_epoch=500, verbose=False)
+        keras_score = keras_r.evaluate(x, y)
+        self.scores.append(keras_score)
+        self.estimators.append(keras_r)
+        print("keras ({}) = - ".format(keras_score))
+        '''
+
         return self
 
     def predict(self, x):
 
         preds = []
         for est in self.estimators:
-            preds.append(est.predict(x))
+            pred = est.predict(x)
+            pred = np.reshape(pred, (pred.shape[0],))
+            preds.append(pred)
 
         preds = np.asarray(preds)
 
@@ -578,29 +606,29 @@ class MetaRegressor(BaseEstimator):
 
 
 if __name__ == '__main__':
-    x, y, x_test, id_test = process_data(*load_data(5000))
+    #x, y, x_test, id_test = process_data(*load_data())
     # x, y, x_test, id_test = second_process(*load_data(5000))
-    joblib.dump(x, 'x.pkl')
-    joblib.dump(y, 'y.pkl')
-    joblib.dump(x_test, 'x_test.pkl')
-    joblib.dump(id_test, 'id_test.pkl')
-    #x = joblib.load('x.pkl')
-    #y = joblib.load('y.pkl')
-    #x_test = joblib.load('x_test.pkl')
-    #id_test = joblib.load('id_test.pkl')
+    #joblib.dump(x, 'x.pkl')
+    #joblib.dump(y, 'y.pkl')
+    #joblib.dump(x_test, 'x_test.pkl')
+    #joblib.dump(id_test, 'id_test.pkl')
+    x = joblib.load('x.pkl')
+    y = joblib.load('y.pkl')
+    x_test = joblib.load('x_test.pkl')
+    id_test = joblib.load('id_test.pkl')
 
-    est = MetaRegressor()
     x = normalize(x, axis=0)
     x_test = normalize(x_test, axis=0)
-    
+    est = MetaRegressor()
+    '''
+
     #print(do_keras(*train_test_split(x, y, test_size=0.25)))
 
-    
+
     base_cross_val(est, x, y)
     base_cross_val(XGBRegressor(n_estimators=500), x, y)
     '''
     est.fit(x, y)
     y_pred = est.predict(x_test)
     pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('meta_submission.csv',index=False)
-    '''
-    
+
