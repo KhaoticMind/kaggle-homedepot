@@ -383,6 +383,7 @@ def gbr_grid_search(x, y, random=False):
                   'subsample': np.linspace(0.1, 1.0, 5),
                   'max_features': ['sqrt']  # , 'log2', None]
                   }
+    params_gbr = {'n_estimators' : [500]}
 
     if not random:
         grid = base_grid_search(gbr, x, y, params_gbr)
@@ -399,6 +400,7 @@ def rfr_grid_search(x, y, random=False):
                  'max_depth': [3, 6, 10, 15],
                  'n_estimators': np.linspace(10, 500, 5, dtype='int'),
                  }
+    params_rf = { 'n_estimators' : [500]}
 
     if not random:
         grid = base_grid_search(rf, x, y, params_rf)
@@ -416,8 +418,10 @@ def xgbr_grid_search(x, y, random=False):
                   'colsample_bytree': np.linspace(0.5, 1, 5),
                   'n_estimators': np.linspace(100, 1500, 5, dtype='int'),
                   }
+    params_xgb = {'n_estimators' : [1500]}
 
     fit_params_xgb = {'eval_metric': 'rmse'}
+    
 
     if not random:
         grid = base_grid_search(xgbr, x, y, params_xgb, fit_params_xgb)
@@ -433,6 +437,7 @@ def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
                    'n_estimators': np.linspace(10, 100, 5, dtype='int'),
                    'max_features': np.linspace(0.1, 1, 5),
                    }
+    params_bagr = {'n_estimators' : [200]}
     if not random:
         grid = base_grid_search(bagr, x, y, params_bagr)
     else:
@@ -538,16 +543,16 @@ class MetaRegressor(BaseEstimator):
         self.scores = []
         self.estimators = []
 
-        grids.append(xgbr_grid_search(x, y, True))
+        grids.append(xgbr_grid_search(x, y, False))
         timer.done("XGBR")
 
-        grids.append(gbr_grid_search(x, y, True))
+        grids.append(gbr_grid_search(x, y, False))
         timer.done("GBR")
 
-        grids.append(rfr_grid_search(x, y, True))
+        grids.append(rfr_grid_search(x, y, False))
         timer.done("RFR")
 
-        grids.append(bagr_grid_search(x, y, random=True))
+        grids.append(bagr_grid_search(x, y, random=False))
         timer.done("BAGR")
 
         #grids.append(svr_rbf_grid_search(x, y, random=True))
@@ -617,8 +622,8 @@ if __name__ == '__main__':
     x_test = joblib.load('x_test.pkl')
     id_test = joblib.load('id_test.pkl')
 
-    x = normalize(x, axis=0)
-    x_test = normalize(x_test, axis=0)
+    #x = normalize(x, axis=0)
+    #x_test = normalize(x_test, axis=0)
     est = MetaRegressor()
     '''
 
