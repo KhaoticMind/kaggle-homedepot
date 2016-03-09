@@ -84,6 +84,7 @@ def load_data(samples=None):
     df_brand['brand'] = df_brand['value']
     df_brand.drop('value', axis=1, inplace=True)
 
+
     material = dict()
     df_attr['about_material'] = df_attr['name'].str.lower().str.contains('material')
     for row in df_attr[df_attr['about_material']].iterrows():
@@ -421,7 +422,7 @@ def xgbr_grid_search(x, y, random=False):
     params_xgb = {'n_estimators' : [1500]}
 
     fit_params_xgb = {'eval_metric': 'rmse'}
-    
+
 
     if not random:
         grid = base_grid_search(xgbr, x, y, params_xgb, fit_params_xgb)
@@ -543,6 +544,7 @@ class MetaRegressor(BaseEstimator):
         self.scores = []
         self.estimators = []
 
+        '''
         grids.append(xgbr_grid_search(x, y, False))
         timer.done("XGBR")
 
@@ -555,6 +557,13 @@ class MetaRegressor(BaseEstimator):
         grids.append(bagr_grid_search(x, y, random=False))
         timer.done("BAGR")
 
+        '''
+
+        self.estimators.append(XGBRegressor(n_estimators=5000).fit(x,y))
+        self.estimators.append(GradientBoostingRegressor(n_estimators=1000).fit(x,y))
+        self.estimators.append(RandomForestRegressor(n_estimators=2500).fit(x,y))
+        self.estimators.append(BaggingRegressor(n_estimators=500).fit(x,y))
+        self.scores.extend([1,1,1,1])
         #grids.append(svr_rbf_grid_search(x, y, random=True))
         #timer.done("SVR - RBF")
 
@@ -567,6 +576,7 @@ class MetaRegressor(BaseEstimator):
         #grids.append(svr_linear_grid_search(x, y, random=True))
         #timer.done("SVR - Linear")
 
+        '''
         for grid in grids:
             self.scores.append(grid.best_score_ * -1)
             est = grid.best_estimator_
@@ -574,8 +584,8 @@ class MetaRegressor(BaseEstimator):
             print("{} ({}) = {} ".format(est.__class__,
                                          grid.best_score_,
                                          grid.best_params_))
-
-        '''            
+        '''
+        '''
         keras_r = get_keras(x.shape[1])
         keras_r.fit(x, y, nb_epoch=500, verbose=False)
         keras_score = keras_r.evaluate(x, y)
