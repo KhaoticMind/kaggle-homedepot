@@ -3,6 +3,7 @@ start_time = time.time()
 
 import numpy as np
 import pandas as pd
+import scipy as sp
 from sklearn.ensemble import RandomForestRegressor
 #from sklearn import pipeline, model_selection
 from sklearn import pipeline, grid_search
@@ -24,6 +25,8 @@ import re
 import random
 
 from homedepot import *
+
+from itertools import product as iter_product
 
 from xgboost import XGBRegressor
 random.seed(2016)
@@ -215,6 +218,9 @@ df_all['word_in_brand'] = df_all['attr'].map(lambda x:str_common_word(x.split('\
 df_all['word_in_material'] = df_all['attr'].map(lambda x:str_common_word(x.split('\t')[0],x.split('\t')[2]))
 df_all['word_in_color'] = df_all['attr'].map(lambda x:str_common_word(x.split('\t')[0],x.split('\t')[3]))
 
+df_all['2grams_search_term'] = df_all['search_term'].apply(lambda x: len(list(ngrams(x, 2))))
+df_all['3grams_search_term'] = df_all['search_term'].apply(lambda x: len(list(ngrams(x, 3))))
+df_all['4grams_search_term'] = df_all['search_term'].apply(lambda x: len(list(ngrams(x, 4))))
 
 df_all['2grams_in_title'] = df_all['product_info'].map(lambda x:str_common_grams(x.split('\t')[0],x.split('\t')[1], 2, 2))
 df_all['2grams_in_description'] = df_all['product_info'].map(lambda x:str_common_grams(x.split('\t')[0],x.split('\t')[2], 2, 2))
@@ -234,12 +240,20 @@ df_all['4grams_in_brand'] = df_all['attr'].map(lambda x:str_common_grams(x.split
 df_all['4grams_in_material'] = df_all['attr'].map(lambda x:str_common_grams(x.split('\t')[0],x.split('\t')[2], 4, 4))
 df_all['4grams_in_color'] = df_all['attr'].map(lambda x:str_common_grams(x.split('\t')[0],x.split('\t')[3], 4, 4))
 
-df_all['ratio_title'] = df_all['word_in_title']/df_all['len_of_query']
-df_all['ratio_description'] = df_all['word_in_description']/df_all['len_of_query']
-df_all['ratio_brand'] = df_all['word_in_brand']/df_all['len_of_brand']
-df_all['ratio_material'] = df_all['word_in_material']/df_all['len_of_material']
-df_all['ratio_color'] = df_all['word_in_color']/df_all['len_of_color']
+for col in ['title', 'description', 'brand', 'material', 'color']:
+    df_all['2gram_ratio_' + col] = df_all['2grams_in_' + col] / df_all['2grams_search_term']
+    df_all['3gram_ratio_' + col] = df_all['3grams_in_' + col] / df_all['3grams_search_term']
+    df_all['4gram_ratio_' + col] = df_all['4grams_in_' + col] / df_all['4grams_search_term']
 
+
+df_all['w_ratio_title'] = df_all['word_in_title']/df_all['len_of_query']
+df_all['w_ratio_description'] = df_all['word_in_description']/df_all['len_of_query']
+df_all['w_ratio_brand'] = df_all['word_in_brand']/df_all['len_of_brand']
+df_all['w_ratio_material'] = df_all['word_in_material']/df_all['len_of_material']
+df_all['w_ratio_color'] = df_all['word_in_color']/df_all['len_of_color']
+
+
+df_all.fillna(0, inplace=True)
 
 df_brand = pd.unique(df_all.brand.ravel())
 d={}
@@ -277,8 +291,8 @@ X_train =df_train[:]
 X_test = df_test[:]
 print("--- Features Set: %s minutes ---" % round(((time.time() - start_time)/60),2))
 
-rfr = RandomForestRegressor(n_estimators = 500, n_jobs = -1, random_state = 2016, verbose = 1)
-xgbr = XGBRegressor(nthread=1, n_estimators=1000)
+#rfr = RandomForestRegressor(n_estimators = 500, n_jobs = -1, random_state = 2016, verbose = 1)
+#xgbr = XGBRegressor(nthread=1, n_estimators=1000)
 
 tfidf = TfidfVectorizer(ngram_range=(1, 2), stop_words='english')
 tsvd = TruncatedSVD(n_components=30, random_state = 2016)
@@ -294,30 +308,31 @@ clf = pipeline.Pipeline([
                         ('txt6', pipeline.Pipeline([('s6', cust_txt_col(key='color')), ('tfidf6', tfidf), ('tsvd6', tsvd)])),
                         ],
                     transformer_weights = {
-                        'cst': 1.0,
+                        'cst':  0.5,
                         'txt1': 0.5,
-                        'txt2': 0.25,
+                        'txt2': 1.0,
                         'txt3': 0.5,
-                        'txt4': 0.5,
-                        'txt5': 0.25,
-                        'txt6': 0.25,
+                        'txt4': 1.0,
+                        'txt5': 1.0,
+                        'txt6': 1.0,
                         },
-                n_jobs = 10
+                n_jobs = 1
                 )),
         ('meta', MetaRegressor())])
 
+values = [[1,1,1,1,1,1,1],
+          [1, 0.5, 0.25, 0.5, 0.5, 0.25, 0.25],
+          [1, 1, 1, 0.5, 0.5, 0.25, 0.25],
+          [1, 1, 1, 0.25, 0.25, 0.5, 0.5],
+          [1, 1, 1, 0.5, 0.5, 0.5, 0.5],
+          [1, 1, 0.5, 0.5, 0.5, 0.5, 0.5]]
 
-param_grid = {'union__transformer_weights': [
-                    [1,1,1,1,1,1,1],
-                    [1, 0.5, 0.25, 0.5, 0.5, 0.25, 0.25],
-                    [1, 1, 1, 0.5, 0.5, 0.25, 0.25],
-                    [1, 1, 1, 0.25, 0.25, 0.5, 0.5],
-                    [1, 1, 1, 0.5, 0.5, 0.5, 0.5],
-                    [1, 1, 0.5, 0.5, 0.5, 0.5, 0.5],
-                ],
+
+param_grid = {'union__transformer_weights': [list(x) for x in iter_product([0.5, 1.0], repeat=7)]
               }
 #fit_params = {'xgbr__eval_metric':'rmse'}
-#model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = 20, cv = 5, verbose = 20, scoring=RMSE)
+#model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = 20, cv = 3, verbose = 0, scoring=RMSE)
+
 model = clf
 
 model.fit(X_train, y_train)
@@ -332,6 +347,6 @@ y_pred = model.predict(X_test)
 y_pred[y_pred > 3] = 3
 y_pred[y_pred < 1] = 1
 
-pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission_test_script_1.csv',index=False)
+pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission_test_script_20160310.csv',index=False)
 print("--- Training & Testing: %s minutes ---" % round(((time.time() - start_time)/60),2))
 

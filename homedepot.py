@@ -5,7 +5,7 @@ Created on Mon Feb  1 17:18:03 2016
 @author: ur57
 """
 
-from sklearn.cross_validation import cross_val_score
+from sklearn.cross_validation import cross_val_score, KFold
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestRegressor, BaggingRegressor, GradientBoostingRegressor
 from sklearn.grid_search import GridSearchCV, RandomizedSearchCV
@@ -35,6 +35,7 @@ from sklearn.svm import SVR, LinearSVR
 from sklearn.preprocessing import normalize
 
 from scipy.sparse import hstack
+from scipy.optimize import minimize
 
 import random
 from numpy import random as np_random
@@ -346,13 +347,13 @@ def base_randomized_grid_search(est, x, y, params, fit_params=None):
     rmse_scorer = make_scorer(rmse, greater_is_better=False)
     grid = RandomizedSearchCV(est,
                               params,
-                              verbose=0,
+                              verbose=3,
                               scoring=rmse_scorer,
                               error_score=-100,
                               n_jobs=N_JOBS,
                               fit_params=fit_params,
-                              cv=3,
-                              n_iter=20,
+                              cv=5,
+                              n_iter=30,
                               )
 
     grid.fit(x, y)
@@ -384,7 +385,6 @@ def gbr_grid_search(x, y, random=False):
                   'subsample': np.linspace(0.1, 1.0, 5),
                   'max_features': ['sqrt']  # , 'log2', None]
                   }
-    params_gbr = {'n_estimators' : [500]}
 
     if not random:
         grid = base_grid_search(gbr, x, y, params_gbr)
@@ -401,7 +401,6 @@ def rfr_grid_search(x, y, random=False):
                  'max_depth': [3, 6, 10, 15],
                  'n_estimators': np.linspace(10, 500, 5, dtype='int'),
                  }
-    params_rf = { 'n_estimators' : [500]}
 
     if not random:
         grid = base_grid_search(rf, x, y, params_rf)
@@ -419,7 +418,6 @@ def xgbr_grid_search(x, y, random=False):
                   'colsample_bytree': np.linspace(0.5, 1, 5),
                   'n_estimators': np.linspace(100, 1500, 5, dtype='int'),
                   }
-    params_xgb = {'n_estimators' : [1500]}
 
     fit_params_xgb = {'eval_metric': 'rmse'}
 
@@ -438,7 +436,6 @@ def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
                    'n_estimators': np.linspace(10, 100, 5, dtype='int'),
                    'max_features': np.linspace(0.1, 1, 5),
                    }
-    params_bagr = {'n_estimators' : [200]}
     if not random:
         grid = base_grid_search(bagr, x, y, params_bagr)
     else:
@@ -537,6 +534,18 @@ def do_keras(X_train, X_test, y_train, y_test):
     model.fit(X_train, y_train, batch_size=64)
     return model.evaluate(X_test, y_test)
 
+def optimize_function(pesos, preds, y_true):
+    weigths = np.asarray(pesos)
+    values = np.asarray(preds)
+    y_pred = values * np.expand_dims(weigths, 1)
+
+    y_pred = np.sum(y_pred, axis=0)/np.sum(weigths)
+    y_pred[y_pred > 3] = 3
+    y_pred[y_pred < 1] = 1
+    res = rmse(y_true, y_pred)
+    #print('Resultado para {} = {}'.format(weigths, res))
+    return res
+
 class MetaRegressor(BaseEstimator):
     def fit(self, x, y=None, **fit_params):
         timer = TimeCount()
@@ -544,26 +553,28 @@ class MetaRegressor(BaseEstimator):
         self.scores = []
         self.estimators = []
 
-        '''
-        grids.append(xgbr_grid_search(x, y, False))
+        grids.append(xgbr_grid_search(x, y, True))
         timer.done("XGBR")
 
-        grids.append(gbr_grid_search(x, y, False))
+        grids.append(gbr_grid_search(x, y, True))
         timer.done("GBR")
 
-        grids.append(rfr_grid_search(x, y, False))
+        grids.append(rfr_grid_search(x, y, True))
         timer.done("RFR")
 
-        grids.append(bagr_grid_search(x, y, random=False))
+        grids.append(bagr_grid_search(x, y, random=True))
         timer.done("BAGR")
-
         '''
 
-        self.estimators.append(XGBRegressor(n_estimators=5000).fit(x,y))
-        self.estimators.append(GradientBoostingRegressor(n_estimators=1000).fit(x,y))
-        self.estimators.append(RandomForestRegressor(n_estimators=2500).fit(x,y))
-        self.estimators.append(BaggingRegressor(n_estimators=500).fit(x,y))
-        self.scores.extend([1,1,1,1])
+        self.estimators.append(XGBRegressor(n_estimators=100, nthread=1).fit(x,y))
+        self.estimators.append(GradientBoostingRegressor(n_estimators=100).fit(x,y))
+        self.estimators.append(RandomForestRegressor(n_estimators=100, n_jobs=1).fit(x,y))
+        self.estimators.append(BaggingRegressor(n_estimators=100, n_jobs=1).fit(x,y))
+        '''
+
+        timer.done("Estimacoes iniciais")
+
+        #self.scores = [1, 1, 1, 1]
         #grids.append(svr_rbf_grid_search(x, y, random=True))
         #timer.done("SVR - RBF")
 
@@ -576,7 +587,7 @@ class MetaRegressor(BaseEstimator):
         #grids.append(svr_linear_grid_search(x, y, random=True))
         #timer.done("SVR - Linear")
 
-        '''
+
         for grid in grids:
             self.scores.append(grid.best_score_ * -1)
             est = grid.best_estimator_
@@ -584,7 +595,7 @@ class MetaRegressor(BaseEstimator):
             print("{} ({}) = {} ".format(est.__class__,
                                          grid.best_score_,
                                          grid.best_params_))
-        '''
+
         '''
         keras_r = get_keras(x.shape[1])
         keras_r.fit(x, y, nb_epoch=500, verbose=False)
@@ -593,6 +604,25 @@ class MetaRegressor(BaseEstimator):
         self.estimators.append(keras_r)
         print("keras ({}) = - ".format(keras_score))
         '''
+
+        print("Fazendo otimizacao")
+        bnds = ((0.0, None), (0.0, None), (0.0, None), (0.0, None))
+        optimum_weigths = []
+        folds = KFold(x.shape[0], 10)
+        for train_index, test_index in folds:
+            preds = []
+            for est in self.estimators:
+                preds.append(est.predict(x[train_index]))
+
+            res = minimize(optimize_function, [1, 1, 1, 1], args=(preds,y[train_index]), bounds=bnds )
+            optimum_weigths.append(res.x)
+            #timer.done("Parcial x = {}".format(res.x))
+
+        timer.done("Otimizacao")
+
+        res = np.mean(optimum_weigths, axis=0)
+        print("pesos = {}".format(res))
+        self.scores = res
 
         return self
 
@@ -606,14 +636,9 @@ class MetaRegressor(BaseEstimator):
 
         preds = np.asarray(preds)
 
-        self.scores = np.asarray(self.scores) * 1
-        factor = np.min(self.scores) / self.scores
-        factor = factor ** 1
+        preds = preds * np.expand_dims(self.scores, 1)
 
-        preds = np.expand_dims(factor, 1) * preds
-
-        y_pred = np.sum(preds, axis=0)/np.sum(factor)
-
+        y_pred = np.sum(preds, axis=0)/np.sum(self.scores)
         y_pred[y_pred > 3] = 3
         y_pred[y_pred < 1] = 1
 
