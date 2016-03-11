@@ -553,6 +553,7 @@ class MetaRegressor(BaseEstimator):
         self.scores = []
         self.estimators = []
 
+        '''
         grids.append(xgbr_grid_search(x, y, True))
         timer.done("XGBR")
 
@@ -570,7 +571,6 @@ class MetaRegressor(BaseEstimator):
         self.estimators.append(GradientBoostingRegressor(n_estimators=100).fit(x,y))
         self.estimators.append(RandomForestRegressor(n_estimators=100, n_jobs=1).fit(x,y))
         self.estimators.append(BaggingRegressor(n_estimators=100, n_jobs=1).fit(x,y))
-        '''
 
         timer.done("Estimacoes iniciais")
 
@@ -586,8 +586,8 @@ class MetaRegressor(BaseEstimator):
 
         #grids.append(svr_linear_grid_search(x, y, random=True))
         #timer.done("SVR - Linear")
-
-
+        
+        '''
         for grid in grids:
             self.scores.append(grid.best_score_ * -1)
             est = grid.best_estimator_
@@ -596,7 +596,6 @@ class MetaRegressor(BaseEstimator):
                                          grid.best_score_,
                                          grid.best_params_))
 
-        '''
         keras_r = get_keras(x.shape[1])
         keras_r.fit(x, y, nb_epoch=500, verbose=False)
         keras_score = keras_r.evaluate(x, y)
