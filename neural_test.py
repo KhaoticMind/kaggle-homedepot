@@ -13,10 +13,22 @@ from keras.layers import Dense, Dropout, Activation, Flatten
 from keras.layers import Convolution2D, MaxPooling2D, Merge
 from keras.layers.normalization import BatchNormalization
 from keras.constraints import nonneg
+
+from nltk.stem.snowball import SnowballStemmer
+from nltk.tokenize import word_tokenize
+from nltk.stem.porter import PorterStemmer
+from nltk.corpus import stopwords
+from nltk import ngrams
+
+from gensim.models import Word2Vec
+
+import sys
+
 import theano
 theano.config.openmp = True
 
-
+stop = stopwords.words('english')
+stem = SnowballStemmer('english').stem
 
 def rmse(y_true, y_pred):
     from keras import backend as k
@@ -25,7 +37,27 @@ def rmse(y_true, y_pred):
     return k.sqrt(mean_squared_error(y_true, y_pred))
 
 
-df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")[:10000]
+def stemmer(sent):
+    return ' '.join([stem(word)
+                    for word in word_tokenize(sent.lower())
+                    if word not in stop])
+
+
+def get_gram_ratio(text1, text2, w2v, n_grams=1, w=100, h=5700):
+    arr = np.ndarray((w, h), np.float)
+    arr.fill(-1)
+    t1 = list(ngrams(text1.split(), n_grams))
+    t2 = list(ngrams(text2.split(), n_grams))
+    for i in range(len(t1)):
+        for j in range(len(t2)):
+            try:
+                arr[i, j] = w2v.n_similarity(t1[i], t2[j])
+            except:
+                pass
+    return arr
+
+
+df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")[:100]
 df_test = pd.read_csv('test.csv', encoding="ISO-8859-1")[:10]
 df_pro_desc = pd.read_csv('product_descriptions.csv')
 df_attr = pd.read_csv('attributes.csv')
@@ -58,56 +90,75 @@ df_color = df_color.reset_index()
 df_color.columns = ['product_uid', 'color']
 
 num_train = df_train.shape[0]
+
 df_all = pd.concat((df_train, df_test), axis=0, ignore_index=True)
 df_all = pd.merge(df_all, df_pro_desc, how='left', on='product_uid')
 df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
 df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
 df_all = pd.merge(df_all, df_color, how='left', on='product_uid')
 
-df_all['search_term'] = df_all['search_term'].str.lower()
-df_all['product_description'] = df_all['product_description'].str.lower()
-df_all['brand'] = df_all['brand'].str.lower()
-df_all['material'] = df_all['material'].str.lower()
-df_all['color'] = df_all['color'].str.lower()
-
 df_all.fillna('', inplace=True)
 
-df_train = df_all.iloc[:num_train]
-df_test = df_all.iloc[num_train:]
+df_all['search_term'] = df_all['search_term'].map(lambda x: stemmer(x))
+df_all['product_description'] = df_all['product_description'].map(lambda x: stemmer(x))
+df_all['brand'] = df_all['brand'].map(lambda x: stemmer(x))
+df_all['material'] = df_all['material'].map(lambda x: stemmer(x))
+df_all['color'] = df_all['color'].map(lambda x: stemmer(x))
 
 id_test = df_test['id']
 y_train = df_train['relevance'].values
-X_train = []
-X_test = []
 
-for row in df_train.itertuples():
-    arr = np.ndarray((4, 65, 5500))
-    arr.fill(255 * 255)
+del df_color, df_pro_desc, df_attr, df_brand, df_material
+
+
+sent = df_all['product_description'].str.split().tolist()
+w2v = Word2Vec(sent, workers=5)
+words_importance = []
+for row in df_all[['search_term', 'product_description']].itertuples():
+    arr1 = get_gram_ratio(row.search_term, row.product_description, w2v)
+    arr2 = get_gram_ratio(row.search_term, row.product_description, w2v, 2)
+    arr3 = get_gram_ratio(row.search_term, row.product_description, w2v, 3)
+    arr4 = get_gram_ratio(row.search_term, row.product_description, w2v, 4)
+
+    words_importance.append(np.stack([arr1, arr2, arr3, arr4]))
+
+words_importance = np.asarray(words_importance)
+
+letter_relation = []
+for row in df_all.itertuples():
+    arr = np.ndarray((4, 100, 5700), dtype=np.byte)
+    arr.fill(0)
     for i in range(len(row.search_term)):
         val_i = ord(row.search_term[i])
 
         for j in range(len(row.product_description)):
             val_j = ord(row.product_description[j])
-            arr[0, i, j] = abs(val_i - val_j) * 255
+            arr[0, i, j] = abs(255 - val_i - val_j)
 
         for j in range(len(row.brand)):
             val_j = ord(row.brand[j])
-            arr[1, i, j] = abs(val_i - val_j) * 255
+            arr[1, i, j] = abs(255 - val_i - val_j)
 
         for j in range(len(row.material)):
             val_j = ord(row.material[j])
-            arr[2, i, j] = abs(val_i - val_j) * 255
+            arr[2, i, j] = abs(255 - val_i - val_j)
 
         for j in range(len(row.color)):
             val_j = ord(row.color[j])
-            arr[3, i, j] = abs(val_i - val_j) * 255
+            arr[3, i, j] = abs(255 - val_i - val_j)
 
-    X_train.append(arr)
+    letter_relation.append(arr)
 
-X_train = np.asarray(X_train)
+letter_relation = np.asarray(letter_relation)
+
+X = np.concatenate((words_importance, letter_relation), axis=1)
+X_train = X[:num_train]
+X_test = X[num_train:]
+
+del df_all, X
 
 model = Sequential()
-model.add(BatchNormalization(input_shape=(4, 55, 5500), mode=0, axis=1))
+model.add(BatchNormalization(input_shape=(8, 100, 5700), mode=0, axis=1))
 model.add(Convolution2D(16, 8, 8, border_mode='valid'))
 model.add(Activation('sigmoid'))
 model.add(Convolution2D(16, 8, 8))
