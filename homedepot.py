@@ -42,7 +42,13 @@ from numpy import random as np_random
 
 from keras.models import Sequential
 from keras.layers import Dense, Dropout
-from keras.optimizers import SGD
+from keras.optimizers import SGD, Adam
+from keras.constraints import nonneg
+from keras.layers.advanced_activations import PReLU
+from keras.wrappers.scikit_learn import KerasRegressor
+from keras.callbacks import EarlyStopping
+from keras.layers.normalization import BatchNormalization
+
 
 random.seed(2016)
 np_random.seed(2016)
@@ -54,7 +60,7 @@ snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
 
-N_JOBS = 20
+N_JOBS = 1
 
 
 class TimeCount(object):
@@ -337,7 +343,7 @@ def base_cross_val(est, x, y, fit_params=None):
                           cv=3,
                           scoring=rmse_scorer,
                           verbose=3,
-                          n_jobs=1,
+                          n_jobs=N_JOBS,
                           fit_params=fit_params,
                           )
     print(np.mean(res), np.std(res))
@@ -381,7 +387,7 @@ def gbr_grid_search(x, y, random=False):
     params_gbr = {'loss': ['ls'],   # , 'lad', 'huber', 'quantile'],
                   'learning_rate': np.linspace(0.01, 0.5, 5),
                   'max_depth': np.linspace(3, 10, 5, dtype='int'),
-                  'n_estimators': np.linspace(100, 500, 5, dtype='int'),
+                  'n_estimators': np.linspace(1000, 5000, 5, dtype='int'),
                   'subsample': np.linspace(0.1, 1.0, 5),
                   'max_features': ['sqrt']  # , 'log2', None]
                   }
@@ -399,7 +405,7 @@ def rfr_grid_search(x, y, random=False):
                  # 'bootstrap': [True, False],
                  'max_features': ['sqrt', 'log2', None],
                  'max_depth': [3, 6, 10, 15],
-                 'n_estimators': np.linspace(10, 500, 5, dtype='int'),
+                 'n_estimators': np.linspace(500, 5000, 5, dtype='int'),
                  }
 
     if not random:
@@ -416,7 +422,7 @@ def xgbr_grid_search(x, y, random=False):
                   'learning_rate': np.linspace(0.01, 0.5, 5),
                   'subsample': np.linspace(0.5, 1, 5),
                   'colsample_bytree': np.linspace(0.5, 1, 5),
-                  'n_estimators': np.linspace(100, 1500, 5, dtype='int'),
+                  'n_estimators': np.linspace(3000, 5000, 5, dtype='int'),
                   }
 
     fit_params_xgb = {'eval_metric': 'rmse'}
@@ -433,7 +439,7 @@ def xgbr_grid_search(x, y, random=False):
 def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
     bagr = BaggingRegressor(base)
     params_bagr = {'max_samples': np.linspace(0.1, 1, 5),
-                   'n_estimators': np.linspace(10, 100, 5, dtype='int'),
+                   'n_estimators': np.linspace(500, 1000, 5, dtype='int'),
                    'max_features': np.linspace(0.1, 1, 5),
                    }
     if not random:
@@ -507,7 +513,7 @@ def svr_linear_grid_search(x, y, random=False):
     return grid
 
 
-def get_keras(n_columns):
+def get_keras(n_columns=356, optimizer='sgd'):
     def rmse(y_true, y_pred):
         from keras import backend as k
         from keras.objectives import mean_squared_error
@@ -516,16 +522,21 @@ def get_keras(n_columns):
 
     model = Sequential()
 
-    model.add(Dense(64, input_dim=n_columns, activation='linear'))
-    #model.add(Dropout(0.5))
-    model.add(Dense(32, activation='relu'))
-    #model.add(Dropout(0.5))
-    #model.add(Dense(64, activation='linear'))
-    #model.add(Dropout(0.5))
-    model.add(Dense(1, activation='relu'))
+    model.add(Dense(512, input_dim=n_columns, activation='sigmoid'))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.5))
 
-    sgd = SGD(momentum=0.9, nesterov=True)
-    model.compile(loss=rmse, optimizer=sgd)
+    model.add(Dense(512 , activation='sigmoid'))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.5))
+
+    model.add(Dense(512, activation='sigmoid'))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.5))
+
+    model.add(Dense(1, activation='linear', W_constraint=nonneg()))
+
+    model.compile(loss=rmse, optimizer=optimizer)
     return model
 
 
@@ -565,16 +576,13 @@ class MetaRegressor(BaseEstimator):
 
         grids.append(bagr_grid_search(x, y, random=True))
         timer.done("BAGR")
+
         '''
+        self.estimators.append(XGBRegressor(n_estimators=5000, nthread=1).fit(x,y))
+        self.estimators.append(GradientBoostingRegressor(n_estimators=5000).fit(x,y))
+        self.estimators.append(RandomForestRegressor(n_estimators=2500, n_jobs=1).fit(x,y))
+        self.estimators.append(BaggingRegressor(n_estimators=1000, n_jobs=1).fit(x,y))
 
-        self.estimators.append(XGBRegressor(n_estimators=100, nthread=1).fit(x,y))
-        self.estimators.append(GradientBoostingRegressor(n_estimators=100).fit(x,y))
-        self.estimators.append(RandomForestRegressor(n_estimators=100, n_jobs=1).fit(x,y))
-        self.estimators.append(BaggingRegressor(n_estimators=100, n_jobs=1).fit(x,y))
-
-        timer.done("Estimacoes iniciais")
-
-        #self.scores = [1, 1, 1, 1]
         #grids.append(svr_rbf_grid_search(x, y, random=True))
         #timer.done("SVR - RBF")
 
@@ -586,7 +594,7 @@ class MetaRegressor(BaseEstimator):
 
         #grids.append(svr_linear_grid_search(x, y, random=True))
         #timer.done("SVR - Linear")
-        
+
         '''
         for grid in grids:
             self.scores.append(grid.best_score_ * -1)
@@ -595,25 +603,55 @@ class MetaRegressor(BaseEstimator):
             print("{} ({}) = {} ".format(est.__class__,
                                          grid.best_score_,
                                          grid.best_params_))
-
-        keras_r = get_keras(x.shape[1])
-        keras_r.fit(x, y, nb_epoch=500, verbose=False)
-        keras_score = keras_r.evaluate(x, y)
-        self.scores.append(keras_score)
-        self.estimators.append(keras_r)
-        print("keras ({}) = - ".format(keras_score))
         '''
 
+        keras = KerasRegressor(get_keras,
+                               optimizer='sgd',
+                               n_columns=x.shape[1],
+                               batch_size=16,
+                               nb_epoch=100,
+                               validation_split=0.1,
+                               #shuffle=True,
+                               callbacks=[EarlyStopping(patience=3, mode='min')])
+        keras.fit(x, y)
+        self.estimators.append(keras)
+
+        keras = KerasRegressor(get_keras,
+                               optimizer='adam',
+                               n_columns=x.shape[1],
+                               batch_size=16,
+                               nb_epoch=100,
+                               validation_split=0.1,
+                               #shuffle=True,
+                               callbacks=[EarlyStopping(patience=3, mode='min')])
+        keras.fit(x, y)
+        self.estimators.append(keras)
+
+        keras = KerasRegressor(get_keras,
+                               optimizer='rmsprop',
+                               n_columns=x.shape[1],
+                               batch_size=16,
+                               nb_epoch=100,
+                               validation_split=0.1,
+                               #shuffle=True,
+                               callbacks=[EarlyStopping(patience=3, mode='min')])
+        keras.fit(x, y)
+        self.estimators.append(keras)
+
+        timer.done("Estimacoes iniciais")
+
         print("Fazendo otimizacao")
-        bnds = ((0.0, None), (0.0, None), (0.0, None), (0.0, None))
+        bnds = tuple([(1, 5)] * len(self.estimators))
         optimum_weigths = []
         folds = KFold(x.shape[0], 10)
         for train_index, test_index in folds:
             preds = []
             for est in self.estimators:
-                preds.append(est.predict(x[train_index]))
+                pred = est.predict(x[train_index])
+                pred = np.reshape(pred, (pred.shape[0],))
+                preds.append(pred)
 
-            res = minimize(optimize_function, [1, 1, 1, 1], args=(preds,y[train_index]), bounds=bnds )
+            res = minimize(optimize_function, [1]*len(self.estimators), method='L-BFGS-B', args=(preds,y[train_index]), bounds=bnds )
             optimum_weigths.append(res.x)
             #timer.done("Parcial x = {}".format(res.x))
 
