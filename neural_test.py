@@ -22,7 +22,7 @@ from nltk import ngrams
 
 from gensim.models import Word2Vec
 
-import sys
+from itertools import product as iter_product
 
 import theano
 theano.config.openmp = True
@@ -43,11 +43,49 @@ def stemmer(sent):
                     if word not in stop])
 
 
-def get_gram_ratio(text1, text2, w2v, n_grams=1, w=100, h=5700):
-    arr = np.ndarray((w, h), np.float)
-    arr.fill(-1)
-    t1 = list(ngrams(text1.split(), n_grams))
-    t2 = list(ngrams(text2.split(), n_grams))
+def rebin(ndarray, new_shape, operation='avg'):
+    """
+    https://gist.github.com/derricw/95eab740e1b08b78c03f
+    Bins an ndarray in all axes based on the target shape, by summing or
+        averaging.
+
+    Number of output dimensions must match number of input dimensions.
+
+    Example
+    -------
+    >>> m = np.arange(0,100,1).reshape((10,10))
+    >>> n = bin_ndarray(m, new_shape=(5,5), operation='sum')
+    >>> print(n)
+
+    [[ 22  30  38  46  54]
+     [102 110 118 126 134]
+     [182 190 198 206 214]
+     [262 270 278 286 294]
+     [342 350 358 366 374]]
+
+    """
+    if not operation.lower() in ['sum', 'mean', 'average', 'avg']:
+        raise ValueError("Operation {} not supported.".format(operation))
+    if ndarray.ndim != len(new_shape):
+        raise ValueError("Shape mismatch: {} -> {}".format(ndarray.shape,
+                                                           new_shape))
+    compression_pairs = [(d, c//d) for d, c in zip(new_shape,
+                                                   ndarray.shape)]
+    flattened = [l for p in compression_pairs for l in p]
+    ndarray = ndarray.reshape(flattened)
+    for i in range(len(new_shape)):
+        if operation.lower() == "sum":
+            ndarray = ndarray.sum(-1*(i+1))
+        elif operation.lower() in ["mean", "average", "avg"]:
+            ndarray = ndarray.mean(-1*(i+1))
+    return ndarray
+
+
+def get_gram_ratio(text1, text2, w2v, n_grams_1=1, n_grams_2=1, w=30, h=2000):
+    arr = np.ndarray((w, h), np.float32)
+    arr.fill(0)
+    t1 = list(ngrams(text1.split(), n_grams_1))
+    t2 = list(ngrams(text2.split(), n_grams_2))
     for i in range(len(t1)):
         for j in range(len(t2)):
             try:
@@ -97,6 +135,8 @@ df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
 df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
 df_all = pd.merge(df_all, df_color, how='left', on='product_uid')
 
+del df_color, df_attr, df_brand, df_material
+
 df_all.fillna('', inplace=True)
 
 df_all['search_term'] = df_all['search_term'].map(lambda x: stemmer(x))
@@ -108,57 +148,67 @@ df_all['color'] = df_all['color'].map(lambda x: stemmer(x))
 id_test = df_test['id']
 y_train = df_train['relevance'].values
 
-del df_color, df_pro_desc, df_attr, df_brand, df_material
 
+sent = df_pro_desc['product_description'].str.split().tolist()
+del df_pro_desc
 
-sent = df_all['product_description'].str.split().tolist()
 w2v = Word2Vec(sent, workers=5)
 words_importance = []
+arrs = []
 for row in df_all[['search_term', 'product_description']].itertuples():
-    arr1 = get_gram_ratio(row.search_term, row.product_description, w2v)
-    arr2 = get_gram_ratio(row.search_term, row.product_description, w2v, 2)
-    arr3 = get_gram_ratio(row.search_term, row.product_description, w2v, 3)
-    arr4 = get_gram_ratio(row.search_term, row.product_description, w2v, 4)
+    arrs = []
+    for (n1, n2) in list(iter_product([1, 2, 3], repeat=2)):
+        arr = get_gram_ratio(row.search_term, row.product_description, w2v, n1, n2)
+        arrs.append(arr)
 
-    words_importance.append(np.stack([arr1, arr2, arr3, arr4]))
+    words_importance.append(np.stack(arrs))
 
 words_importance = np.asarray(words_importance)
 
+
 letter_relation = []
 for row in df_all.itertuples():
-    arr = np.ndarray((4, 100, 5700), dtype=np.byte)
+    arr = np.ndarray((4, 60, 6000), np.float32)
     arr.fill(0)
     for i in range(len(row.search_term)):
         val_i = ord(row.search_term[i])
 
         for j in range(len(row.product_description)):
             val_j = ord(row.product_description[j])
-            arr[0, i, j] = abs(255 - val_i - val_j)
+            arr[0, i, j] = abs(255 - val_i - val_j)/255
 
         for j in range(len(row.brand)):
             val_j = ord(row.brand[j])
-            arr[1, i, j] = abs(255 - val_i - val_j)
+            arr[1, i, j] = abs(255 - val_i - val_j)/255
 
         for j in range(len(row.material)):
             val_j = ord(row.material[j])
-            arr[2, i, j] = abs(255 - val_i - val_j)
+            arr[2, i, j] = abs(255 - val_i - val_j)/255
 
         for j in range(len(row.color)):
             val_j = ord(row.color[j])
-            arr[3, i, j] = abs(255 - val_i - val_j)
+            arr[3, i, j] = abs(255 - val_i - val_j)/255
+
+    res = []
+    for i in range(arr.shape[0]):
+        res.append(rebin(arr[i], (30, 2000)))
+    arr = np.stack(res)
 
     letter_relation.append(arr)
 
 letter_relation = np.asarray(letter_relation)
 
 X = np.concatenate((words_importance, letter_relation), axis=1)
+
+X = X.astype('float32')
 X_train = X[:num_train]
 X_test = X[num_train:]
 
 del df_all, X
 
+print(X_train.shape)
 model = Sequential()
-model.add(BatchNormalization(input_shape=(8, 100, 5700), mode=0, axis=1))
+model.add(BatchNormalization(input_shape=X_train.shape[1:], mode=0, axis=1))
 model.add(Convolution2D(16, 8, 8, border_mode='valid'))
 model.add(Activation('sigmoid'))
 model.add(Convolution2D(16, 8, 8))
@@ -189,4 +239,6 @@ model.add(Activation('linear'))
 
 model.compile(loss=rmse, optimizer='sgd')
 
-model.fit(X_train, y_train, batch_size=16, nb_epoch=10, validation_split=0.1)
+model.fit(X_train, y_train,
+          batch_size=X_train.shape[0] // 20,
+          nb_epoch=10, validation_split=0.1)
