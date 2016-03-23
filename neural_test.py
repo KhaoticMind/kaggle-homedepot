@@ -12,6 +12,7 @@ from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation, Flatten
 from keras.layers import Convolution2D, MaxPooling2D, Merge
 from keras.layers.normalization import BatchNormalization
+from keras.optimizers import SGD
 from keras.constraints import nonneg
 
 from nltk.stem.snowball import SnowballStemmer
@@ -95,7 +96,7 @@ def get_gram_ratio(text1, text2, w2v, n_grams_1=1, n_grams_2=1, w=30, h=2000):
     return arr
 
 
-df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")[:100]
+df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")[:1000]
 df_test = pd.read_csv('test.csv', encoding="ISO-8859-1")[:10]
 df_pro_desc = pd.read_csv('product_descriptions.csv')
 df_attr = pd.read_csv('attributes.csv')
@@ -135,7 +136,10 @@ df_all = pd.merge(df_all, df_brand, how='left', on='product_uid')
 df_all = pd.merge(df_all, df_material, how='left', on='product_uid')
 df_all = pd.merge(df_all, df_color, how='left', on='product_uid')
 
-del df_color, df_attr, df_brand, df_material
+id_test = df_test['id']
+y_train = df_train['relevance'].values
+
+del df_color, df_attr, df_brand, df_material, df_train, df_test
 
 df_all.fillna('', inplace=True)
 
@@ -145,10 +149,8 @@ df_all['brand'] = df_all['brand'].map(lambda x: stemmer(x))
 df_all['material'] = df_all['material'].map(lambda x: stemmer(x))
 df_all['color'] = df_all['color'].map(lambda x: stemmer(x))
 
-id_test = df_test['id']
-y_train = df_train['relevance'].values
 
-
+'''
 sent = df_pro_desc['product_description'].str.split().tolist()
 del df_pro_desc
 
@@ -164,54 +166,70 @@ for row in df_all[['search_term', 'product_description']].itertuples():
     words_importance.append(np.stack(arrs))
 
 words_importance = np.asarray(words_importance)
+'''
+del df_pro_desc
 
 
-letter_relation = []
-for row in df_all.itertuples():
-    arr = np.ndarray((4, 60, 6000), np.float32)
-    arr.fill(0)
-    for i in range(len(row.search_term)):
-        val_i = ord(row.search_term[i])
-
-        for j in range(len(row.product_description)):
-            val_j = ord(row.product_description[j])
-            arr[0, i, j] = abs(255 - val_i - val_j)/255
-
-        for j in range(len(row.brand)):
-            val_j = ord(row.brand[j])
-            arr[1, i, j] = abs(255 - val_i - val_j)/255
-
-        for j in range(len(row.material)):
-            val_j = ord(row.material[j])
-            arr[2, i, j] = abs(255 - val_i - val_j)/255
-
-        for j in range(len(row.color)):
-            val_j = ord(row.color[j])
-            arr[3, i, j] = abs(255 - val_i - val_j)/255
-
+def data_gen(df_all, y_train=None, n_batch=5):
     res = []
-    for i in range(arr.shape[0]):
-        res.append(rebin(arr[i], (30, 2000)))
-    arr = np.stack(res)
+    y_res = []
+    while True:
+        pos = 0
+        for row in df_all.itertuples():
+            arr = np.ndarray((4, 60, 6000), np.float32)
+            arr.fill(0)
+            for i in range(len(row.search_term)):
+                val_i = ord(row.search_term[i])
 
-    letter_relation.append(arr)
+                for j in range(len(row.product_description)):
+                    val_j = ord(row.product_description[j])
+                    arr[0, i, j] = abs(val_i - val_j)
 
-letter_relation = np.asarray(letter_relation)
+                for j in range(len(row.brand)):
+                    val_j = ord(row.brand[j])
+                    arr[1, i, j] = abs(val_i - val_j)
 
-X = np.concatenate((words_importance, letter_relation), axis=1)
+                for j in range(len(row.material)):
+                    val_j = ord(row.material[j])
+                    arr[2, i, j] = abs(val_i - val_j)
 
-X = X.astype('float32')
-X_train = X[:num_train]
-X_test = X[num_train:]
+                for j in range(len(row.color)):
+                    val_j = ord(row.color[j])
+                    arr[3, i, j] = abs(val_i - val_j)
 
-del df_all, X
+            '''
+            res = []
+            for i in range(arr.shape[0]):
+                res.append(rebin(arr[i], (30, 2000)))
+            arr = np.stack(res)
+            '''
 
-print(X_train.shape)
+            res.append(arr)
+            if y_train is not None:
+                y_res.append(y_train[pos])
+                pos += 1
+
+            if len(res) == n_batch:
+                res = np.asarray(res)
+                if y_train is not None:
+                    y_res = np.asarray(y_res)
+                    yield (res, y_res)
+                    y_res = []
+                else:
+                    yield (res)
+
+                res = []
+
+#X = np.concatenate((words_importance, letter_relation), axis=1)
+df_train = df_all[:num_train]
+df_test = df_all[num_train:]
+
+
 model = Sequential()
-model.add(BatchNormalization(input_shape=X_train.shape[1:], mode=0, axis=1))
-model.add(Convolution2D(16, 8, 8, border_mode='valid'))
+model.add(BatchNormalization(input_shape=(4, 60, 6000), mode=0, axis=1))
+model.add(Convolution2D(16, 3, 3, border_mode='valid'))
 model.add(Activation('sigmoid'))
-model.add(Convolution2D(16, 8, 8))
+model.add(Convolution2D(16, 3, 3))
 model.add(Activation('sigmoid'))
 model.add(MaxPooling2D(pool_size=(2, 2)))
 model.add(Dropout(0.25))
@@ -219,9 +237,9 @@ model.add(Dropout(0.25))
 #model = Sequential()
 #model.add(Merge([tri, quad], mode='concat'))
 
-model.add(Convolution2D(32, 4, 4, border_mode='valid'))
+model.add(Convolution2D(32, 3, 3, border_mode='valid'))
 model.add(Activation('sigmoid'))
-model.add(Convolution2D(32, 4, 4))
+model.add(Convolution2D(32, 3, 3))
 model.add(Activation('sigmoid'))
 model.add(MaxPooling2D(pool_size=(2, 2)))
 model.add(Dropout(0.25))
@@ -229,16 +247,22 @@ model.add(Dropout(0.25))
 model.add(Flatten())
 # Note: Keras does automatic shape inference.
 model.add(Dense(256))
-model.add(Activation('relu'))
+model.add(Activation('sigmoid'))
 model.add(Dense(256))
-model.add(Activation('relu'))
-model.add(Dropout(0.5))
+model.add(Activation('sigmoid'))
+model.add(Dropout(0.25))
 
 model.add(Dense(1, W_constraint=nonneg()))
 model.add(Activation('linear'))
 
-model.compile(loss=rmse, optimizer='sgd')
+sgd = SGD(lr=0.1)
 
-model.fit(X_train, y_train,
-          batch_size=X_train.shape[0] // 20,
-          nb_epoch=10, validation_split=0.1)
+model.compile(loss=rmse, optimizer='adamax')
+
+model.fit_generator(data_gen(df_train, y_train),
+                    samples_per_epoch=df_train.shape[0],
+                    nb_epoch=3)
+
+#model.fit(X_train, y_train,
+#          batch_size=X_train.shape[0] // 20,
+#          nb_epoch=10, validation_split=0.1)
