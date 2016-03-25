@@ -10,10 +10,12 @@ import numpy as np
 
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Activation, Flatten
-from keras.layers import Convolution2D, MaxPooling2D, Merge
+from keras.layers import Convolution2D, MaxPooling2D, Merge, AveragePooling2D
 from keras.layers.normalization import BatchNormalization
 from keras.optimizers import SGD
 from keras.constraints import nonneg
+from keras.layers.advanced_activations import LeakyReLU
+from keras.callbacks import LearningRateScheduler, EarlyStopping
 
 from nltk.stem.snowball import SnowballStemmer
 from nltk.tokenize import word_tokenize
@@ -24,6 +26,8 @@ from nltk import ngrams
 from gensim.models import Word2Vec
 
 from itertools import product as iter_product
+
+from sklearn.cross_validation import train_test_split
 
 import theano
 theano.config.openmp = True
@@ -96,8 +100,77 @@ def get_gram_ratio(text1, text2, w2v, n_grams_1=1, n_grams_2=1, w=30, h=2000):
     return arr
 
 
-df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")[:1000]
-df_test = pd.read_csv('test.csv', encoding="ISO-8859-1")[:10]
+def data_gen(df_all, y_train=None, n_batch=5, loop_forever=True):
+    res = []
+    y_res = []
+    while True:
+        pos = 0
+        for row in df_all.itertuples():
+            search_term = str(row.search_term)
+            bag = str(row.bag)
+            arr = np.ndarray((1, 64, 4800), np.float32)
+            arr.fill(128)
+            for i in range(len(search_term )):
+                val_i = ord(search_term[i])
+
+                for j in range(len(bag)):
+                    val_j = ord(bag[j])
+                    arr[0, i, j] = abs(val_i - val_j)
+
+            arr = arr.reshape((1, 640, 480))
+            res.append(arr)
+            if y_train is not None:
+                y_res.append(y_train[pos])
+                pos += 1
+
+            if len(res) == n_batch:
+                res = np.asarray(res)
+                if y_train is not None:
+                    y_res = np.asarray(y_res)
+                    yield (res, y_res)
+                    y_res = []
+                else:
+                    yield (res)
+
+                res = []
+
+        if not loop_forever:
+            if len(res) > 0:
+                res = np.asarray(res)
+                if y_train is not None:
+                    y_res = np.asarray(y_res)
+                    yield (res, y_res)
+                    y_res = []
+                else:
+                    yield (res)
+
+            break
+
+
+def batch_test(model, data_x, data_y, n_batch=5):
+    foo = data_gen(data_x, data_y, n_batch=n_batch, loop_forever=False)
+    res = []
+    for x, y in foo:
+        ans = model.test_on_batch(x, y)
+        res.extend(ans)
+        print('{:5.4f} - {:5.4f}'.format(np.mean(res), np.std(res)))
+    return res
+
+
+def batch_predict(model, data, n_batch=5):
+    foo = data_gen(data, n_batch=n_batch, loop_forever=False)
+    total = data.shape[0]
+    res = []
+    for x in foo:
+        ans = model.predict(x).ravel().tolist()
+        res.extend(ans)
+        print('{:d} de {:d}'.format(len(res), total))
+    return res
+
+
+'''
+df_train = pd.read_csv('train.csv', encoding="ISO-8859-1", nrows=None)
+df_test = pd.read_csv('test.csv', encoding="ISO-8859-1", nrows=None)
 df_pro_desc = pd.read_csv('product_descriptions.csv')
 df_attr = pd.read_csv('attributes.csv')
 df_attr.dropna(inplace=True)
@@ -145,9 +218,17 @@ df_all.fillna('', inplace=True)
 
 df_all['search_term'] = df_all['search_term'].map(lambda x: stemmer(x))
 df_all['product_description'] = df_all['product_description'].map(lambda x: stemmer(x))
+df_all['product_title'] = df_all['product_title'].map(lambda x: stemmer(x))
 df_all['brand'] = df_all['brand'].map(lambda x: stemmer(x))
 df_all['material'] = df_all['material'].map(lambda x: stemmer(x))
 df_all['color'] = df_all['color'].map(lambda x: stemmer(x))
+
+df_all['bag'] = df_all['product_title'].str.pad(df_all['product_title'].str.len().max(), side='right') + ' ' + \
+                df_all['product_description'].str.pad(df_all['product_description'].str.len().max(), side='right') + ' ' + \
+                df_all['brand'].str.pad(df_all['brand'].str.len().max(), side='right') + ' ' + \
+                df_all['material'].str.pad(df_all['material'].str.len().max(), side='right') + ' ' + \
+                df_all['color'].str.pad(df_all['color'].str.len().max(), side='right')
+'''
 
 
 '''
@@ -166,103 +247,86 @@ for row in df_all[['search_term', 'product_description']].itertuples():
     words_importance.append(np.stack(arrs))
 
 words_importance = np.asarray(words_importance)
+
 '''
-del df_pro_desc
-
-
-def data_gen(df_all, y_train=None, n_batch=5):
-    res = []
-    y_res = []
-    while True:
-        pos = 0
-        for row in df_all.itertuples():
-            arr = np.ndarray((4, 60, 6000), np.float32)
-            arr.fill(0)
-            for i in range(len(row.search_term)):
-                val_i = ord(row.search_term[i])
-
-                for j in range(len(row.product_description)):
-                    val_j = ord(row.product_description[j])
-                    arr[0, i, j] = abs(val_i - val_j)
-
-                for j in range(len(row.brand)):
-                    val_j = ord(row.brand[j])
-                    arr[1, i, j] = abs(val_i - val_j)
-
-                for j in range(len(row.material)):
-                    val_j = ord(row.material[j])
-                    arr[2, i, j] = abs(val_i - val_j)
-
-                for j in range(len(row.color)):
-                    val_j = ord(row.color[j])
-                    arr[3, i, j] = abs(val_i - val_j)
-
-            '''
-            res = []
-            for i in range(arr.shape[0]):
-                res.append(rebin(arr[i], (30, 2000)))
-            arr = np.stack(res)
-            '''
-
-            res.append(arr)
-            if y_train is not None:
-                y_res.append(y_train[pos])
-                pos += 1
-
-            if len(res) == n_batch:
-                res = np.asarray(res)
-                if y_train is not None:
-                    y_res = np.asarray(y_res)
-                    yield (res, y_res)
-                    y_res = []
-                else:
-                    yield (res)
-
-                res = []
 
 #X = np.concatenate((words_importance, letter_relation), axis=1)
-df_train = df_all[:num_train]
-df_test = df_all[num_train:]
+
+#df_train = df_all[:num_train]
+#df_test = df_all[num_train:]
+#df_train.to_csv('processed_train.csv')
+#df_test.to_csv('processed_test.csv')
+
+df_train = pd.read_csv('processed_train.csv', index_col=0, nrows=500)
+df_test = pd.read_csv('processed_test.csv', index_col=0, nrows=100)
+y_train = pd.read_csv('y_train.csv', index_col=0, header=None, nrows=500).values.ravel()
 
 
 model = Sequential()
-model.add(BatchNormalization(input_shape=(4, 60, 6000), mode=0, axis=1))
+model.add(BatchNormalization(input_shape=(1, 640, 480)))
 model.add(Convolution2D(16, 3, 3, border_mode='valid'))
-model.add(Activation('sigmoid'))
+model.add(LeakyReLU())
 model.add(Convolution2D(16, 3, 3))
-model.add(Activation('sigmoid'))
+model.add(LeakyReLU())
 model.add(MaxPooling2D(pool_size=(2, 2)))
 model.add(Dropout(0.25))
 
-#model = Sequential()
-#model.add(Merge([tri, quad], mode='concat'))
+model.add(Convolution2D(24, 3, 3, border_mode='valid'))
+model.add(LeakyReLU())
+model.add(Convolution2D(24, 3, 3))
+model.add(LeakyReLU())
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Dropout(0.25))
 
 model.add(Convolution2D(32, 3, 3, border_mode='valid'))
-model.add(Activation('sigmoid'))
+model.add(LeakyReLU())
 model.add(Convolution2D(32, 3, 3))
-model.add(Activation('sigmoid'))
+model.add(LeakyReLU())
+model.add(MaxPooling2D(pool_size=(2, 2)))
+model.add(Dropout(0.25))
+
+model.add(Convolution2D(40, 3, 3, border_mode='valid'))
+model.add(LeakyReLU())
+model.add(Convolution2D(40, 3, 3))
+model.add(LeakyReLU())
 model.add(MaxPooling2D(pool_size=(2, 2)))
 model.add(Dropout(0.25))
 
 model.add(Flatten())
-# Note: Keras does automatic shape inference.
 model.add(Dense(256))
-model.add(Activation('sigmoid'))
+model.add(LeakyReLU())
 model.add(Dense(256))
-model.add(Activation('sigmoid'))
-model.add(Dropout(0.25))
+model.add(LeakyReLU())
+model.add(Dropout(0.50))
 
 model.add(Dense(1, W_constraint=nonneg()))
 model.add(Activation('linear'))
 
-sgd = SGD(lr=0.1)
+model.compile(loss=rmse, optimizer='rmsprop')
 
-model.compile(loss=rmse, optimizer='adamax')
+#model.load_weights('my_model_4cnn_2hl_weigths.h5')
 
-model.fit_generator(data_gen(df_train, y_train),
-                    samples_per_epoch=df_train.shape[0],
-                    nb_epoch=3)
+def learn_reducer(epoch):
+    return 0.01 / (3 *(epoch + 1))
 
-#model.fit(X_train, y_train,
-#          batch_size=X_train.shape[0] // 20,
-#          nb_epoch=10, validation_split=0.1)
+X_train = df_train
+#X_train, X_test, y_train, y_test = train_test_split(df_train, y_train, test_size=0.1)
+
+model.fit_generator(data_gen(X_train, y_train, n_batch=10),
+                    samples_per_epoch=X_train.shape[0],
+                    nb_epoch=10,
+                    callbacks=[
+                               #LearningRateScheduler(learn_reducer),
+                               EarlyStopping(patience=3, mode='min', monitor='loss')
+                               ],
+                    nb_worker=4,
+                    #validation_data=data_gen(X_test, y_test),
+                    #nb_val_samples=X_test.shape[0]
+                    )
+
+id_test = df_test['id']
+print(batch_predict(model, df_test))
+
+#pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('neural_submission.csv',index=False)
+
+#model.save_weights('my_model_3cnn_2hl_weigths.h5')
