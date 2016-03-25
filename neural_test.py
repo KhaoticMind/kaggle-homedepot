@@ -15,7 +15,7 @@ from keras.layers.normalization import BatchNormalization
 from keras.optimizers import SGD
 from keras.constraints import nonneg
 from keras.layers.advanced_activations import LeakyReLU
-from keras.callbacks import LearningRateScheduler, EarlyStopping
+from keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
 
 from nltk.stem.snowball import SnowballStemmer
 from nltk.tokenize import word_tokenize
@@ -157,7 +157,7 @@ def batch_test(model, data_x, data_y, n_batch=5):
     return res
 
 
-def batch_predict(model, data, n_batch=5):
+def batch_predict(model, data, n_batch=10):
     foo = data_gen(data, n_batch=n_batch, loop_forever=False)
     total = data.shape[0]
     res = []
@@ -257,9 +257,9 @@ words_importance = np.asarray(words_importance)
 #df_train.to_csv('processed_train.csv')
 #df_test.to_csv('processed_test.csv')
 
-df_train = pd.read_csv('processed_train.csv', index_col=0, nrows=500)
-df_test = pd.read_csv('processed_test.csv', index_col=0, nrows=100)
-y_train = pd.read_csv('y_train.csv', index_col=0, header=None, nrows=500).values.ravel()
+df_train = pd.read_csv('processed_train.csv', index_col=0, nrows=74000)
+df_test = pd.read_csv('processed_test.csv', index_col=0, nrows=None)
+y_train = pd.read_csv('y_train.csv', index_col=0, header=None, nrows=74000).values.ravel()
 
 
 model = Sequential()
@@ -302,7 +302,9 @@ model.add(Dropout(0.50))
 model.add(Dense(1, W_constraint=nonneg()))
 model.add(Activation('linear'))
 
-model.compile(loss=rmse, optimizer='rmsprop')
+sgd = SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
+
+model.compile(loss=rmse, optimizer='adamax')
 
 #model.load_weights('my_model_4cnn_2hl_weigths.h5')
 
@@ -310,23 +312,27 @@ def learn_reducer(epoch):
     return 0.01 / (3 *(epoch + 1))
 
 X_train = df_train
-#X_train, X_test, y_train, y_test = train_test_split(df_train, y_train, test_size=0.1)
+X_train, X_test, y_train, y_test = train_test_split(df_train, y_train, test_size=0.05)
 
-model.fit_generator(data_gen(X_train, y_train, n_batch=10),
+model.fit_generator(data_gen(X_train, y_train, n_batch=50),
                     samples_per_epoch=X_train.shape[0],
-                    nb_epoch=10,
+                    nb_epoch=50,
                     callbacks=[
                                #LearningRateScheduler(learn_reducer),
-                               EarlyStopping(patience=3, mode='min', monitor='loss')
+                               EarlyStopping(patience=3, mode='min', monitor='loss'),
+                               ModelCheckpoint('weights.{epoch:02d}-{loss:.2f}.hdf5', monitor='loss', mode='min'),
                                ],
                     nb_worker=4,
-                    #validation_data=data_gen(X_test, y_test),
-                    #nb_val_samples=X_test.shape[0]
+                    validation_data=data_gen(X_test, y_test),
+                    nb_val_samples=X_test.shape[0]
                     )
 
 id_test = df_test['id']
-print(batch_predict(model, df_test))
-
-#pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('neural_submission.csv',index=False)
+y_pred = batch_predict(model, df_test)
+y_pred = np.asarray(y_pred)
+y_pred[y_pred > 3] = 3
+y_pred[y_pred < 1] = 1
+pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('neural_submission_k6000.csv',index=False)
+print(y_pred)
 
 #model.save_weights('my_model_3cnn_2hl_weigths.h5')
