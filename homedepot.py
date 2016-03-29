@@ -12,6 +12,7 @@ from sklearn.grid_search import GridSearchCV, RandomizedSearchCV
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
+from sklearn.utils import shuffle
 
 import pandas as pd
 from nltk.tokenize import word_tokenize
@@ -48,7 +49,11 @@ from keras.layers.advanced_activations import PReLU
 from keras.wrappers.scikit_learn import KerasRegressor
 from keras.callbacks import EarlyStopping
 from keras.layers.normalization import BatchNormalization
+from keras.layers.advanced_activations import LeakyReLU
+from keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
 
+import theano
+theano.config.openmp = True
 
 random.seed(2016)
 np_random.seed(2016)
@@ -521,24 +526,23 @@ def get_keras(n_columns=356, optimizer='sgd'):
         return k.sqrt(mean_squared_error(y_true, y_pred))
 
     model = Sequential()
+    #model.add(BatchNormalization()
+    model.add(Dense(512, input_dim=n_columns))
+    model.add(LeakyReLU())
+    model.add(Dense(512))
+    model.add(LeakyReLU())
 
-    model.add(Dense(512, input_dim=n_columns, activation='sigmoid'))
-    model.add(BatchNormalization())
-    model.add(Dropout(0.5))
-
-    model.add(Dense(512 , activation='sigmoid'))
-    model.add(BatchNormalization())
-    model.add(Dropout(0.5))
-
-    model.add(Dense(512, activation='sigmoid'))
-    model.add(BatchNormalization())
-    model.add(Dropout(0.5))
-
-    model.add(Dense(1, activation='linear', W_constraint=nonneg()))
+    model.add(Dense(512))
+    model.add(LeakyReLU())
+    model.add(Dense(512))
+    model.add(LeakyReLU())
+    model.add(Dense(1, activation='relu'))
 
     model.compile(loss=rmse, optimizer=optimizer)
     return model
 
+def learn_reducer(epoch):
+    return 0.3 / (3 *(epoch + 1))
 
 def do_keras(X_train, X_test, y_train, y_test):
     model = get_keras(X_train.shape[1])
@@ -556,6 +560,39 @@ def optimize_function(pesos, preds, y_true):
     res = rmse(y_true, y_pred)
     #print('Resultado para {} = {}'.format(weigths, res))
     return res
+
+
+class Stacker(object):
+    def __init__(self, stacker, base_models, folds=4):
+        self.folds = folds
+        self.base_models = sorted(base_models)
+        self.stacker = stacker
+
+    def fit(self, X, y):
+        folds = list(KFold(len(y), n_folds=self.folds, random_state=0))
+        base_preds = [_mini_train_predictions(m, X, y, folds) for m in self.base_models]
+        n = len(y)
+
+        XX = np.hstack([X] + [p.reshape(n, 1) for p in base_preds])
+        self.stacker.fit(XX, y)
+        for m in self.base_models:
+            m.fit(X, y)
+        return self
+
+    def predict(self, X):
+        n = X.shape[0]
+        XX = np.hstack([X] + [m.predict(X).reshape(n, 1) for m in self.base_models])
+        return self.stacker.predict(XX)
+
+    def _mini_train_predictions(self, model, X, y, train_test_folds):
+        ind2pred = {}
+        for i, (train, test) in enumerate(train_test_folds):
+            model.fit(X[train], y[train])
+            preds = model.predict(X[test])
+            for i, p in zip(test, preds):
+                ind2pred[i] = p
+
+        return np.array([ind2pred[i] for i in range(len(y))])
 
 class MetaRegressor(BaseEstimator):
     def fit(self, x, y=None, **fit_params):
@@ -578,10 +615,6 @@ class MetaRegressor(BaseEstimator):
         timer.done("BAGR")
 
         '''
-        self.estimators.append(XGBRegressor(n_estimators=5000, nthread=1).fit(x,y))
-        self.estimators.append(GradientBoostingRegressor(n_estimators=5000).fit(x,y))
-        self.estimators.append(RandomForestRegressor(n_estimators=2500, n_jobs=1).fit(x,y))
-        self.estimators.append(BaggingRegressor(n_estimators=1000, n_jobs=1).fit(x,y))
 
         #grids.append(svr_rbf_grid_search(x, y, random=True))
         #timer.done("SVR - RBF")
@@ -605,38 +638,63 @@ class MetaRegressor(BaseEstimator):
                                          grid.best_params_))
         '''
 
+        '''
         keras = KerasRegressor(get_keras,
-                               optimizer='sgd',
+                               optimizer='adadelta',
                                n_columns=x.shape[1],
-                               batch_size=16,
+                               batch_size=5,
                                nb_epoch=100,
                                validation_split=0.1,
                                #shuffle=True,
-                               callbacks=[EarlyStopping(patience=3, mode='min')])
+                               callbacks=[
+                                          #EarlyStopping(patience=3, mode='min'),
+                                          #LearningRateScheduler(learn_reducer)
+                                          ])
         keras.fit(x, y)
         self.estimators.append(keras)
+        pred = keras.predict(x)
+        print('{:.4f} +/- {:.4f}'.format(np.mean(pred),np.std(pred)))
+
 
         keras = KerasRegressor(get_keras,
                                optimizer='adam',
                                n_columns=x.shape[1],
-                               batch_size=16,
+                               batch_size=5,
                                nb_epoch=100,
                                validation_split=0.1,
                                #shuffle=True,
-                               callbacks=[EarlyStopping(patience=3, mode='min')])
+                               callbacks=[
+                                          #EarlyStopping(patience=3, mode='min'),
+                                          #LearningRateScheduler(learn_reducer)
+                                          ])
         keras.fit(x, y)
         self.estimators.append(keras)
+        pred = keras.predict(x)
+        print('{:.4f} +/- {:.4f}'.format(np.mean(pred),np.std(pred)))
+
 
         keras = KerasRegressor(get_keras,
-                               optimizer='rmsprop',
+                               optimizer='adamax',
                                n_columns=x.shape[1],
-                               batch_size=16,
+                               batch_size=5,
                                nb_epoch=100,
                                validation_split=0.1,
                                #shuffle=True,
-                               callbacks=[EarlyStopping(patience=3, mode='min')])
+                               callbacks=[
+                                          #EarlyStopping(patience=3, mode='min'),
+                                          #LearningRateScheduler(learn_reducer)
+                               ])
         keras.fit(x, y)
         self.estimators.append(keras)
+        pred = keras.predict(x)
+        print('{:.4f} +/- {:.4f}'.format(np.mean(pred),np.std(pred)))
+        '''
+
+
+        self.estimators.append(XGBRegressor(n_estimators=5000, nthread=8).fit(x,y))
+        self.estimators.append(GradientBoostingRegressor(n_estimators=5000).fit(x,y))
+        self.estimators.append(RandomForestRegressor(n_estimators=2500, n_jobs=8).fit(x,y))
+        self.estimators.append(BaggingRegressor(n_estimators=1000, n_jobs=8).fit(x,y))
 
         timer.done("Estimacoes iniciais")
 
@@ -694,18 +752,34 @@ if __name__ == '__main__':
     x_test = joblib.load('x_test.pkl')
     id_test = joblib.load('id_test.pkl')
 
-    #x = normalize(x, axis=0)
-    #x_test = normalize(x_test, axis=0)
+    xbin1 = np.repeat(x[(y >= 1.0) & (y < 1.5)], 7, axis=0)
+    xbin2 = np.repeat(x[(y >= 1.5) & (y < 2.0)], 5, axis=0)
+    xbin3 = np.repeat(x[(y >= 2.0) & (y < 2.5)], 1, axis=0)
+    xbin4 = np.repeat(x[(y >= 2.5) & (y <= 3)], 1, axis=0)
+
+    x = np.vstack((xbin1, xbin2, xbin3, xbin4))
+
+    ybin1 = np.repeat(y[(y >= 1.0) & (y < 1.5)], 7, axis=0)
+    ybin2 = np.repeat(y[(y >= 1.5) & (y < 2.0)], 5, axis=0)
+    ybin3 = np.repeat(y[(y >= 2.0) & (y < 2.5)], 1, axis=0)
+    ybin4 = np.repeat(y[(y >= 2.5) & (y <= 3)], 1, axis=0)
+
+    y = np.concatenate((ybin1, ybin2, ybin3, ybin4))
+
+    x, y = shuffle(x, y)
+
+    x = normalize(x)
+    x_test = normalize(x_test)
     est = MetaRegressor()
-    '''
 
     #print(do_keras(*train_test_split(x, y, test_size=0.25)))
 
-
+    '''
     base_cross_val(est, x, y)
     base_cross_val(XGBRegressor(n_estimators=500), x, y)
     '''
     est.fit(x, y)
     y_pred = est.predict(x_test)
-    pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('meta_submission.csv',index=False)
+    pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('new_meta_submission.csv',index=False)
+
 
