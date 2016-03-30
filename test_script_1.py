@@ -33,8 +33,8 @@ from itertools import product as iter_product
 from xgboost import XGBRegressor
 random.seed(2016)
 
-df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")[:10000]
-df_test = pd.read_csv('test.csv', encoding="ISO-8859-1")[:1000]
+df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")
+df_test = pd.read_csv('test.csv', encoding="ISO-8859-1")
 df_pro_desc = pd.read_csv('product_descriptions.csv')
 df_attr = pd.read_csv('attributes.csv')
 df_attr.dropna(inplace=True)
@@ -186,12 +186,6 @@ class cust_txt_col(BaseEstimator, TransformerMixin):
     def transform(self, data_dict):
         return data_dict[self.key].apply(str)
 
-def fmean_squared_error(ground_truth, predictions):
-    fmean_squared_error_ = mean_squared_error(ground_truth, predictions)**0.5
-    return fmean_squared_error_
-
-RMSE  = make_scorer(fmean_squared_error, greater_is_better=False)
-
 #comment out the lines below use df_all.csv for further grid search testing
 #if adding features consider any drops on the 'cust_regression_vals' class
 df_all['search_term'] = df_all['search_term'].map(lambda x:str_stem(x))
@@ -294,10 +288,11 @@ X_test = df_test[:]
 print("--- Features Set: %s minutes ---" % round(((time.time() - start_time)/60),2))
 
 rfr = RandomForestRegressor(n_estimators = 500, n_jobs = -1, random_state = 2016, verbose = 1)
-#xgbr = XGBRegressor(nthread=1, n_estimators=1000)
+xgbr = XGBRegressor(nthread=2, n_estimators=5000, max_depth=10, learning_rate=0.01)
 
 tfidf = TfidfVectorizer(ngram_range=(1, 3), stop_words='english')
 tsvd = TruncatedSVD(n_components=50, random_state = 2016)
+
 clf = pipeline.Pipeline([
         ('union', FeatureUnion(
                     transformer_list = [
@@ -310,19 +305,19 @@ clf = pipeline.Pipeline([
                         ('txt6', pipeline.Pipeline([('s6', cust_txt_col(key='color')), ('tfidf6', tfidf), ('tsvd6', tsvd)])),
                         ],
                     transformer_weights = {
-                        'cst':  0.5,
+                        'cst':  1.0,
                         'txt1': 0.5,
-                        'txt2': 1.0,
-                        'txt3': 0.5,
-                        'txt4': 1.0,
-                        'txt5': 1.0,
-                        'txt6': 1.0,
+                        'txt2': 0.5,
+                        'txt3': 1.0,
+                        'txt4': 0.5,
+                        'txt5': 0.5,
+                        'txt6': 0.5,
                         },
                 n_jobs = 1
                 )),
         #('rfr', rfr)])
         #('keras', KerasRegressor(get_keras, batch_size=16, nb_epoch=100, validation_split=0.1, shuffle=True))])
-        ('meta', MetaRegressor())])
+        ('meta', xgbr)])
 
 
 values = [[1,1,1,1,1,1,1],
@@ -338,25 +333,20 @@ param_grid = {'union__transformer_weights': [list(x) for x in iter_product([0.5,
 #fit_params = {'xgbr__eval_metric':'rmse'}
 #model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = 20, cv = 3, verbose = 0, scoring=RMSE)
 
-#model = clf
+model = clf
 #base_cross_val(model, X_train, y_train)
 
-base_cross_val(clf, X_train, y_train)
-
-
-
-'''
 model.fit(X_train, y_train)
-print("Best parameters found by grid search:")
-print(model.best_params_)
-print("Best CV score:")
-print(model.best_score_)
+#print("Best parameters found by grid search:")
+#print(model.best_params_)
+#print("Best CV score:")
+#print(model.best_score_)
 y_pred = model.predict(X_test)
 
 y_pred[y_pred > 3] = 3
 y_pred[y_pred < 1] = 1
 
-pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission_test_script_20160310.csv',index=False)
+pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission_test_script_20160330.csv',index=False)
 print("--- Training & Testing: %s minutes ---" % round(((time.time() - start_time)/60),2))
-'''
+
 
