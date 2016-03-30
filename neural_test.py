@@ -31,6 +31,8 @@ from sklearn.cross_validation import train_test_split
 
 from binascii import crc32
 
+import sys
+
 import theano
 theano.config.openmp = True
 
@@ -265,9 +267,9 @@ words_importance = np.asarray(words_importance)
 #df_train.to_csv('processed_train.csv')
 #df_test.to_csv('processed_test.csv')
 
-df_train = pd.read_csv('processed_train.csv', index_col=0, nrows=1000)
+df_train = pd.read_csv('processed_train.csv', index_col=0, nrows=None)
 df_test = pd.read_csv('processed_test.csv', index_col=0, nrows=None)
-y_train = pd.read_csv('y_train.csv', index_col=0, header=None, nrows=1000).values.ravel()
+y_train = pd.read_csv('y_train.csv', index_col=0, header=None, nrows=None).values.ravel()
 
 
 model = Sequential()
@@ -312,23 +314,22 @@ model.add(Activation('linear'))
 
 sgd = SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
 
-model.compile(loss=rmse, optimizer=sgd)
+model.compile(loss=rmse, optimizer='adamax')
 
 #model.load_weights('weights-sgd-10batch-01-0.43.hdf5')
-#open('model-sgd-10batch-15-0.42.json', 'w').write(model.to_json())
+open('model-4cnn-2fc.json', 'w').write(model.to_json())
 
 def learn_reducer(epoch):
     return 0.003 / (3 *(epoch + 1))
 
-X_train = df_train
+
 X_train, X_test, y_train, y_test = train_test_split(df_train, y_train, test_size=0.05)
-df_train = X_train
 
 df_train2 = pd.DataFrame()
-df_train2 = df_train2.append(df_train.ix[np.repeat(df_train.index[(y_train >= 1.0) & (y_train < 1.5)].tolist(), 7)])
-df_train2 = df_train2.append(df_train.ix[np.repeat(df_train.index[(y_train >= 1.5) & (y_train < 2.0)].tolist(), 5)])
-df_train2 = df_train2.append(df_train.ix[np.repeat(df_train.index[(y_train >= 2.0) & (y_train < 2.5)].tolist(), 1)])
-df_train2 = df_train2.append(df_train.ix[np.repeat(df_train.index[(y_train >= 2.5) & (y_train <= 3)].tolist(), 1)])
+df_train2 = df_train2.append(X_train.ix[np.repeat(X_train.index[(y_train >= 1.0) & (y_train < 1.5)].tolist(), 7)])
+df_train2 = df_train2.append(X_train.ix[np.repeat(X_train.index[(y_train >= 1.5) & (y_train < 2.0)].tolist(), 5)])
+df_train2 = df_train2.append(X_train.ix[np.repeat(X_train.index[(y_train >= 2.0) & (y_train < 2.5)].tolist(), 1)])
+df_train2 = df_train2.append(X_train.ix[np.repeat(X_train.index[(y_train >= 2.5) & (y_train <= 3)].tolist(), 1)])
 X_train = df_train2
 
 ybin1 = np.repeat(y_train[(y_train >= 1.0) & (y_train < 1.5)], 7, axis=0)
@@ -338,26 +339,32 @@ ybin4 = np.repeat(y_train[(y_train >= 2.5) & (y_train <= 3)], 1, axis=0)
 
 y_train = np.concatenate((ybin1, ybin2, ybin3, ybin4))
 
-model.fit_generator(data_gen(X_train, y_train, n_batch=10),
+indexes = list(range(len(y_train)))
+np.random.shuffle(indexes)
+
+X_train = X_train.iloc[indexes]
+y_train = y_train[indexes]
+
+model.fit_generator(data_gen(X_train, y_train, n_batch=15),
                     samples_per_epoch=X_train.shape[0],
-                    nb_epoch=5,
+                    nb_epoch=3,
                     callbacks=[
                                LearningRateScheduler(learn_reducer),
                                EarlyStopping(patience=3, mode='min', monitor='val_loss'),
-                               #ModelCheckpoint('weights-sgd-10batch-{epoch:02d}-loss_{loss:.5f}-vl_{val_loss:.5f}.hdf5', monitor='val_loss', mode='min'),
+                               ModelCheckpoint('weights-model_with_class_balanced-{epoch:02d}-loss_{loss:.5f}-vl_{val_loss:.5f}.hdf5', monitor='val_loss', mode='min'),
                                ],
                     nb_worker=4,
                     validation_data=data_gen(X_test, y_test),
                     nb_val_samples=X_test.shape[0]
                     )
-'''
+
 id_test = df_test['id']
 y_pred = batch_predict(model, df_test, n_batch=20)
 y_pred = np.asarray(y_pred)
 y_pred[y_pred > 3] = 3
 y_pred[y_pred < 1] = 1
 print(y_pred)
-pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission-sgd-10batch-01-0.43.csv',index=False)
+pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission-model_with_class_balanced.csv',index=False)
 
 #model.save_weights('my_model_3cnn_2hl_weigths.h5')
-'''
+
