@@ -12,7 +12,10 @@ from nltk.util import everygrams
 #from sklearn.feature_extraction import DictVectorizer
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import FeatureUnion
-from sklearn.decomposition import TruncatedSVD
+from sklearn.decomposition import TruncatedSVD, PCA
+from sklearn.neural_network import BernoulliRBM
+from sklearn.preprocessing import Normalizer, MinMaxScaler
+
 #from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import mean_squared_error, make_scorer
@@ -26,6 +29,7 @@ import re
 import random
 
 from homedepot import *
+from helper_processing import *
 from keras.wrappers.scikit_learn import KerasRegressor
 
 from itertools import product as iter_product
@@ -33,8 +37,8 @@ from itertools import product as iter_product
 from xgboost import XGBRegressor
 random.seed(2016)
 
-df_train = pd.read_csv('train.csv', encoding="ISO-8859-1")
-df_test = pd.read_csv('test.csv', encoding="ISO-8859-1")
+df_train = pd.read_csv('train.csv', encoding="ISO-8859-1", nrows=30000)
+df_test = pd.read_csv('test.csv', encoding="ISO-8859-1", nrows=200)
 df_pro_desc = pd.read_csv('product_descriptions.csv')
 df_attr = pd.read_csv('attributes.csv')
 df_attr.dropna(inplace=True)
@@ -125,18 +129,11 @@ def str_stem(s):
 
         s = re.sub(r"([0-9]+)( *)(amperes|ampere|amps|amp)\.?", r"\1amp. ", s)
 
-
-
-        s = s.replace("whirpool","whirlpool")
-        s = s.replace("whirlpoolga", "whirlpool")
-        s = s.replace("whirlpoolstainless","whirlpool stainless")
-
-        s = s.replace("  "," ")
-        #s = (" ").join([stemmer.stem(z) for z in s.lower().split(" ")])
+        s = s.replace("  +"," ")
         s = (" ").join([stemmer.stem(z) for z in s.split(" ")])
         return s.lower()
     else:
-        return "null"
+        return " "
 
 def str_common_word(str1, str2):
     words, cnt = str1.split(), 0
@@ -248,6 +245,28 @@ df_all['w_ratio_brand'] = df_all['word_in_brand']/df_all['len_of_brand']
 df_all['w_ratio_material'] = df_all['word_in_material']/df_all['len_of_material']
 df_all['w_ratio_color'] = df_all['word_in_color']/df_all['len_of_color']
 
+print("--- Primeiro processamento: %s minutes ---" % round(((time.time() - start_time)/60),2))
+start_time = time.time()
+
+
+w2v = Word2Vec.load_word2vec_format('word2vec-GoogleNews-vectors-negative300.bin.gz', binary=True)
+print("--- Loading W2V: %s minutes ---" % round(((time.time() - start_time)/60),2))
+start_time = time.time()
+
+df_all['w2v_search_desc_1_1'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 1, 1))
+df_all['w2v_search_desc_1_2'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 1, 2))
+df_all['w2v_search_desc_1_3'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 1, 3))
+
+df_all['w2v_search_desc_2_1'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 2, 1))
+df_all['w2v_search_desc_2_2'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 2, 2))
+df_all['w2v_search_desc_2_3'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 2, 3))
+
+df_all['w2v_search_desc_3_1'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 3, 1))
+df_all['w2v_search_desc_3_2'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 3, 2))
+df_all['w2v_search_desc_3_3'] = df_all['product_info'].map(lambda x:get_gram_ratio(w2v, x.split('\t')[0],x.split('\t')[2], 3, 3))
+print("--- W2V: %s minutes ---" % round(((time.time() - start_time)/60),2))
+start_time = time.time()
+
 
 df_all.fillna(0, inplace=True)
 
@@ -280,67 +299,87 @@ df_all['search_term_feature'] = df_all['search_term'].map(lambda x:len(x))
 #df_all.to_csv('df_all.csv')
 #df_all = pd.read_csv('df_all.csv', encoding="ISO-8859-1", index_col=0)
 df_train = df_all.iloc[:num_train]
+df_train.to_csv('X_train_test_script_1.csv')
 df_test = df_all.iloc[num_train:]
+
 id_test = df_test['id']
 y_train = df_train['relevance'].values
 X_train =df_train[:]
 X_test = df_test[:]
 print("--- Features Set: %s minutes ---" % round(((time.time() - start_time)/60),2))
 
-rfr = RandomForestRegressor(n_estimators = 500, n_jobs = -1, random_state = 2016, verbose = 1)
-xgbr = XGBRegressor(nthread=2, n_estimators=5000, max_depth=10, learning_rate=0.01)
+rfr = RandomForestRegressor(n_estimators = 100, random_state = 2016, verbose = 1)
+xgbr = XGBRegressor(nthread=1)
 
 tfidf = TfidfVectorizer(ngram_range=(1, 3), stop_words='english')
 tsvd = TruncatedSVD(n_components=50, random_state = 2016)
+
+rbm = BernoulliRBM(verbose=True)
+norm = Normalizer()
+min_max = MinMaxScaler()
+
+pca = PCA(n_components=0.99)
 
 clf = pipeline.Pipeline([
         ('union', FeatureUnion(
                     transformer_list = [
                         ('cst',  cust_regression_vals()),
                         ('txt1', pipeline.Pipeline([('s1', cust_txt_col(key='search_term')), ('tfidf1', tfidf), ('tsvd1', tsvd)])),
-                        ('txt2', pipeline.Pipeline([('s2', cust_txt_col(key='product_title')), ('tfidf2', tfidf), ('tsvd2', tsvd)])),
-                        ('txt3', pipeline.Pipeline([('s3', cust_txt_col(key='product_description')), ('tfidf3', tfidf), ('tsvd3', tsvd)])),
+                        ('txt2', pipeline.Pipeline([('s3', cust_txt_col(key='product_description')), ('tfidf3', tfidf), ('tsvd3', tsvd)])),
+                        ('txt3', pipeline.Pipeline([('s2', cust_txt_col(key='product_title')), ('tfidf2', tfidf), ('tsvd2', tsvd)])),
                         ('txt4', pipeline.Pipeline([('s4', cust_txt_col(key='brand')), ('tfidf4', tfidf), ('tsvd4', tsvd)])),
                         ('txt5', pipeline.Pipeline([('s5', cust_txt_col(key='material')), ('tfidf5', tfidf), ('tsvd5', tsvd)])),
                         ('txt6', pipeline.Pipeline([('s6', cust_txt_col(key='color')), ('tfidf6', tfidf), ('tsvd6', tsvd)])),
                         ],
-                    transformer_weights = {
-                        'cst':  1.0,
-                        'txt1': 0.5,
-                        'txt2': 0.5,
-                        'txt3': 1.0,
-                        'txt4': 0.5,
-                        'txt5': 0.5,
-                        'txt6': 0.5,
-                        },
-                n_jobs = 1
+                        n_jobs = 1
+                    #transformer_weights = {
+                    #    'cst':  1.0,
+                    #    'txt1': 1.0,
+                    #    'txt2': 1.0,
+                    #    'txt3': 1.0,
+                    #    'txt4': 0.5,
+                    #    'txt5': 0.5,
+                    #    'txt6': 0.5,
+                    #    },
+
                 )),
+        #('pca', pca),
         #('rfr', rfr)])
         #('keras', KerasRegressor(get_keras, batch_size=16, nb_epoch=100, validation_split=0.1, shuffle=True))])
-        ('meta', xgbr)])
+        ('reg', xgbr)])
 
 
-values = [[1,1,1,1,1,1,1],
-          [1, 0.5, 0.25, 0.5, 0.5, 0.25, 0.25],
-          [1, 1, 1, 0.5, 0.5, 0.25, 0.25],
-          [1, 1, 1, 0.25, 0.25, 0.5, 0.5],
-          [1, 1, 1, 0.5, 0.5, 0.5, 0.5],
-          [1, 1, 0.5, 0.5, 0.5, 0.5, 0.5]]
+# [1.0, 1.0, 1.0, 0.5, 0.5, 0.5, 0.5]
+# {'reg__learning_rate': 0.01, 'reg__max_depth': 3, 'reg__n_estimators': 1750}
 
-
-param_grid = {'union__transformer_weights': [list(x) for x in iter_product([0.5, 1.0], repeat=7)]
+param_grid = {
+               #'union__transformer_weights': [list(x) for x in iter_product([0.5, 1.0], repeat=7)]
+               #'union__transformer_weights': [list(x) for x in iter_product([0.0, 0.5, 1.0], repeat=7)],
+               'reg__n_estimators': np.linspace(500, 3000, 3, dtype=np.int),
+               'reg__max_depth': np.linspace(3, 15, 3, dtype=np.int),
+               'reg__learning_rate': np.linspace(0.001, 0.3, 3),
+               'reg__subsample': np.linspace(0.3, 1, 3),
+               'reg__colsample_bytree': np.linspace(0.3, 1, 3),
+               #'pca__whiten' : [True, False]
               }
-#fit_params = {'xgbr__eval_metric':'rmse'}
-#model = grid_search.GridSearchCV(estimator = clf, param_grid = param_grid, n_jobs = 20, cv = 3, verbose = 0, scoring=RMSE)
 
-model = clf
-#base_cross_val(model, X_train, y_train)
+fit_params = {'reg__eval_metric':'rmse'}
 
+model = grid_search.GridSearchCV(estimator = clf,
+                                 param_grid = param_grid,
+                                 n_jobs = 20,
+                                 cv = 5,
+                                 verbose = 5,
+                                 scoring=RMSE,
+                                 fit_params = fit_params)
+
+#base_cross_val(model, X_train, y_train, fit_params = {'reg__eval_metric':'rmse'})
 model.fit(X_train, y_train)
-#print("Best parameters found by grid search:")
-#print(model.best_params_)
-#print("Best CV score:")
-#print(model.best_score_)
+print("Best parameters found by grid search:")
+print(model.best_params_)
+print("Best CV score:")
+print(model.best_score_)
+'''
 y_pred = model.predict(X_test)
 
 y_pred[y_pred > 3] = 3
@@ -348,5 +387,4 @@ y_pred[y_pred < 1] = 1
 
 pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('submission_test_script_20160330.csv',index=False)
 print("--- Training & Testing: %s minutes ---" % round(((time.time() - start_time)/60),2))
-
-
+'''

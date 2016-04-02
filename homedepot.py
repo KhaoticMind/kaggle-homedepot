@@ -53,6 +53,7 @@ from keras.layers.advanced_activations import LeakyReLU
 from keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
 
 import theano
+
 theano.config.openmp = True
 
 random.seed(2016)
@@ -64,9 +65,7 @@ wnl = WordNetLemmatizer()
 snow = SnowballStemmer('english')
 porter = PorterStemmer()
 
-
-N_JOBS = 1
-
+N_JOBS = 20
 
 class TimeCount(object):
     def __init__(self):
@@ -348,7 +347,7 @@ def base_cross_val(est, x, y, fit_params=None):
                           cv=3,
                           scoring=rmse_scorer,
                           verbose=3,
-                          n_jobs=N_JOBS,
+                          n_jobs=1,
                           fit_params=fit_params,
                           )
     print(np.mean(res), np.std(res))
@@ -358,12 +357,12 @@ def base_randomized_grid_search(est, x, y, params, fit_params=None):
     rmse_scorer = make_scorer(rmse, greater_is_better=False)
     grid = RandomizedSearchCV(est,
                               params,
-                              verbose=3,
+                              verbose=0,
                               scoring=rmse_scorer,
                               error_score=-100,
                               n_jobs=N_JOBS,
                               fit_params=fit_params,
-                              cv=5,
+                              cv=3,
                               n_iter=30,
                               )
 
@@ -390,10 +389,10 @@ def base_grid_search(est, x, y, params, fit_params=None):
 def gbr_grid_search(x, y, random=False):
     gbr = GradientBoostingRegressor()
     params_gbr = {'loss': ['ls'],   # , 'lad', 'huber', 'quantile'],
-                  'learning_rate': np.linspace(0.01, 0.5, 5),
-                  'max_depth': np.linspace(3, 10, 5, dtype='int'),
-                  'n_estimators': np.linspace(1000, 5000, 5, dtype='int'),
-                  'subsample': np.linspace(0.1, 1.0, 5),
+                  'learning_rate': np.linspace(0.001, 0.1, 5),
+                  'max_depth': np.linspace(3, 15, 5, dtype='int'),
+                  'n_estimators': np.linspace(2000, 5000, 5, dtype='int'),
+                  'subsample': np.linspace(0.4, 1.0, 5),
                   'max_features': ['sqrt']  # , 'log2', None]
                   }
 
@@ -409,8 +408,8 @@ def rfr_grid_search(x, y, random=False):
     params_rf = {'oob_score': [True, False],
                  # 'bootstrap': [True, False],
                  'max_features': ['sqrt', 'log2', None],
-                 'max_depth': [3, 6, 10, 15],
-                 'n_estimators': np.linspace(500, 5000, 5, dtype='int'),
+                 'max_depth': [10, 15, 20],
+                 'n_estimators': np.linspace(1000, 5000, 5, dtype='int'),
                  }
 
     if not random:
@@ -424,9 +423,9 @@ def rfr_grid_search(x, y, random=False):
 def xgbr_grid_search(x, y, random=False):
     xgbr = XGBRegressor(nthread=1)
     params_xgb = {'max_depth': np.linspace(7, 15, 5, dtype='int32'),
-                  'learning_rate': np.linspace(0.01, 0.5, 5),
-                  'subsample': np.linspace(0.5, 1, 5),
-                  'colsample_bytree': np.linspace(0.5, 1, 5),
+                  'learning_rate': np.linspace(0.001, 0.1, 5),
+                  'subsample': np.linspace(0.3, 1, 5),
+                  'colsample_bytree': np.linspace(0.1, 0.7, 5),
                   'n_estimators': np.linspace(3000, 5000, 5, dtype='int'),
                   }
 
@@ -443,9 +442,9 @@ def xgbr_grid_search(x, y, random=False):
 
 def bagr_grid_search(x, y, base=RandomForestRegressor(), random=False):
     bagr = BaggingRegressor(base)
-    params_bagr = {'max_samples': np.linspace(0.1, 1, 5),
+    params_bagr = {'max_samples': np.linspace(0.5, 1, 5),
                    'n_estimators': np.linspace(500, 1000, 5, dtype='int'),
-                   'max_features': np.linspace(0.1, 1, 5),
+                   'max_features': np.linspace(0.3, 1, 5),
                    }
     if not random:
         grid = base_grid_search(bagr, x, y, params_bagr)
@@ -570,7 +569,7 @@ class Stacker(object):
 
     def fit(self, X, y):
         folds = list(KFold(len(y), n_folds=self.folds, random_state=0))
-        base_preds = [_mini_train_predictions(m, X, y, folds) for m in self.base_models]
+        base_preds = [self._mini_train_predictions(m, X, y, folds) for m in self.base_models]
         n = len(y)
 
         XX = np.hstack([X] + [p.reshape(n, 1) for p in base_preds])
@@ -601,7 +600,7 @@ class MetaRegressor(BaseEstimator):
         self.scores = []
         self.estimators = []
 
-        '''
+
         grids.append(xgbr_grid_search(x, y, True))
         timer.done("XGBR")
 
@@ -615,20 +614,20 @@ class MetaRegressor(BaseEstimator):
         timer.done("BAGR")
 
         '''
+        grids.append(svr_rbf_grid_search(x, y, random=True))
+        timer.done("SVR - RBF")
 
-        #grids.append(svr_rbf_grid_search(x, y, random=True))
-        #timer.done("SVR - RBF")
+        grids.append(svr_poly_grid_search(x, y, random=True))
+        timer.done("SVR - POLY")
 
-        #grids.append(svr_poly_grid_search(x, y, random=True))
-        #timer.done("SVR - POLY")
+        grids.append(svr_sigmoid_grid_search(x, y, random=True))
+        timer.done("SVR - Sigmoid")
 
-        #grids.append(svr_sigmoid_grid_search(x, y, random=True))
-        #timer.done("SVR - Sigmoid")
-
-        #grids.append(svr_linear_grid_search(x, y, random=True))
-        #timer.done("SVR - Linear")
-
+        grids.append(svr_linear_grid_search(x, y, random=True))
+        timer.done("SVR - Linear")
         '''
+
+
         for grid in grids:
             self.scores.append(grid.best_score_ * -1)
             est = grid.best_estimator_
@@ -636,7 +635,7 @@ class MetaRegressor(BaseEstimator):
             print("{} ({}) = {} ".format(est.__class__,
                                          grid.best_score_,
                                          grid.best_params_))
-        '''
+
 
         '''
         keras = KerasRegressor(get_keras,
@@ -689,35 +688,14 @@ class MetaRegressor(BaseEstimator):
         pred = keras.predict(x)
         print('{:.4f} +/- {:.4f}'.format(np.mean(pred),np.std(pred)))
         '''
-
-
+        '''
         self.estimators.append(XGBRegressor(n_estimators=5000, nthread=8).fit(x,y))
         self.estimators.append(GradientBoostingRegressor(n_estimators=5000).fit(x,y))
         self.estimators.append(RandomForestRegressor(n_estimators=2500, n_jobs=8).fit(x,y))
         self.estimators.append(BaggingRegressor(n_estimators=1000, n_jobs=8).fit(x,y))
-
+        '''
         timer.done("Estimacoes iniciais")
 
-        print("Fazendo otimizacao")
-        bnds = tuple([(1, 5)] * len(self.estimators))
-        optimum_weigths = []
-        folds = KFold(x.shape[0], 10)
-        for train_index, test_index in folds:
-            preds = []
-            for est in self.estimators:
-                pred = est.predict(x[train_index])
-                pred = np.reshape(pred, (pred.shape[0],))
-                preds.append(pred)
-
-            res = minimize(optimize_function, [1]*len(self.estimators), method='L-BFGS-B', args=(preds,y[train_index]), bounds=bnds )
-            optimum_weigths.append(res.x)
-            #timer.done("Parcial x = {}".format(res.x))
-
-        timer.done("Otimizacao")
-
-        res = np.mean(optimum_weigths, axis=0)
-        print("pesos = {}".format(res))
-        self.scores = res
 
         return self
 
@@ -731,9 +709,15 @@ class MetaRegressor(BaseEstimator):
 
         preds = np.asarray(preds)
 
-        preds = preds * np.expand_dims(self.scores, 1)
+        self.scores = np.asarray(self.scores) * 1
+        factor = np.min(self.scores) / self.scores
+        factor = factor ** 1
 
-        y_pred = np.sum(preds, axis=0)/np.sum(self.scores)
+        preds = np.expand_dims(factor, 1) * preds
+
+        y_pred = np.sum(preds, axis=0)/np.sum(factor)
+
+
         y_pred[y_pred > 3] = 3
         y_pred[y_pred < 1] = 1
 
@@ -747,8 +731,8 @@ if __name__ == '__main__':
     #joblib.dump(y, 'y.pkl')
     #joblib.dump(x_test, 'x_test.pkl')
     #joblib.dump(id_test, 'id_test.pkl')
-    x = joblib.load('x.pkl')
-    y = joblib.load('y.pkl')
+    x = joblib.load('x.pkl')[:20000]
+    y = joblib.load('y.pkl')[:20000]
     x_test = joblib.load('x_test.pkl')
     id_test = joblib.load('id_test.pkl')
 
@@ -774,12 +758,13 @@ if __name__ == '__main__':
 
     #print(do_keras(*train_test_split(x, y, test_size=0.25)))
 
-    '''
+
     base_cross_val(est, x, y)
     base_cross_val(XGBRegressor(n_estimators=500), x, y)
     '''
     est.fit(x, y)
     y_pred = est.predict(x_test)
     pd.DataFrame({"id": id_test, "relevance": y_pred}).to_csv('new_meta_submission.csv',index=False)
+    '''
 
 

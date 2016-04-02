@@ -23,7 +23,6 @@ from nltk.stem.porter import PorterStemmer
 from nltk.corpus import stopwords
 from nltk import ngrams
 
-from gensim.models import Word2Vec
 
 from itertools import product as iter_product
 
@@ -241,25 +240,6 @@ df_all['bag'] = df_all['product_title'].str.pad(df_all['product_title'].str.len(
 '''
 
 
-'''
-sent = df_pro_desc['product_description'].str.split().tolist()
-del df_pro_desc
-
-w2v = Word2Vec(sent, workers=5)
-words_importance = []
-arrs = []
-for row in df_all[['search_term', 'product_description']].itertuples():
-    arrs = []
-    for (n1, n2) in list(iter_product([1, 2, 3], repeat=2)):
-        arr = get_gram_ratio(row.search_term, row.product_description, w2v, n1, n2)
-        arrs.append(arr)
-
-    words_importance.append(np.stack(arrs))
-
-words_importance = np.asarray(words_importance)
-
-'''
-
 #X = np.concatenate((words_importance, letter_relation), axis=1)
 
 #df_train = df_all[:num_train]
@@ -310,7 +290,7 @@ model.add(LeakyReLU())
 model.add(Dropout(0.50))
 
 model.add(Dense(1, W_constraint=nonneg()))
-model.add(Activation('linear'))
+model.add(Activation('relu'))
 
 sgd = SGD(lr=0.001, decay=1e-6, momentum=0.9, nesterov=True)
 
